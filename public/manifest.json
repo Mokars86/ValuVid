@@ -1,0 +1,23 @@
+{
+  "short_name": "ValuVid",
+  "name": "ValuVid — African Creator Short Videos & Monetization Hub",
+  "icons": [
+    {
+      "src": "/app-icon.jpg",
+      "sizes": "192x192",
+      "type": "image/jpeg",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "/app-icon.jpg",
+      "sizes": "512x512",
+      "type": "image/jpeg",
+      "purpose": "any maskable"
+    }
+  ],
+  "start_url": "/",
+  "background_color": "#050608",
+  "theme_color": "#07080a",
+  "display": "standalone",
+  "orientation": "portrait"
+}

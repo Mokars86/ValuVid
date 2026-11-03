@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">ValuVid</string>
+    <string name="title_activity_main">ValuVid</string>
+    <string name="package_name">com.valuvid.app</string>
+    <string name="custom_url_scheme">com.valuvid.app</string>
+</resources>
