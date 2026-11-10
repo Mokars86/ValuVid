@@ -42,6 +42,21 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
   });
   const [isTheaterFullscreen, setIsTheaterFullscreen] = useState(false);
   const [playbackProgress, setPlaybackProgress] = useState(0);
+  const [isScreenPortrait, setIsScreenPortrait] = useState(() => 
+    typeof window !== 'undefined' ? window.innerHeight > window.innerWidth : true
+  );
+
+  useEffect(() => {
+    const handleResize = () => {
+      setIsScreenPortrait(window.innerHeight > window.innerWidth);
+    };
+    window.addEventListener('resize', handleResize);
+    window.addEventListener('orientationchange', handleResize);
+    return () => {
+      window.removeEventListener('resize', handleResize);
+      window.removeEventListener('orientationchange', handleResize);
+    };
+  }, []);
 
   // Native phone back button listener to exit Theater Mode immediately
   useEffect(() => {
@@ -253,14 +268,22 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
       onPointerDown={handlePointerDown}
       onClick={handleContainerClick}
       style={{ touchAction: 'none' }}
-      className="relative w-full h-full bg-black overflow-hidden flex items-center justify-center cursor-pointer select-none touch-none"
+      className={`overflow-hidden flex items-center justify-center cursor-pointer select-none touch-none ${
+        isTheaterFullscreen
+          ? 'fixed inset-0 z-50 bg-black w-screen h-screen'
+          : 'relative w-full h-full bg-black'
+      }`}
     >
       {/* 0ms Instant Poster Layer: Prevents black-screen flash while video decoder warms up */}
       {video.thumbnailUrl && (
         <img
           src={video.thumbnailUrl}
           alt={video.title}
-          className={`absolute inset-0 w-full h-full ${isLandscape ? 'object-contain' : 'object-cover'} transition-opacity duration-300 pointer-events-none select-none z-1 ${
+          className={`absolute transition-all duration-300 pointer-events-none select-none z-1 ${
+            isTheaterFullscreen
+              ? (isScreenPortrait ? 'w-[100vh] h-[100vw] object-contain rotate-90 max-w-none max-h-none' : 'w-full h-full object-contain')
+              : (isLandscape ? 'w-full h-full object-contain' : 'w-full h-full object-cover')
+          } ${
             isVideoReady ? 'opacity-0' : 'opacity-100'
           }`}
           loading="eager"
@@ -268,7 +291,7 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
       )}
 
       {/* Ambient Glow Backdrop for Horizontal Landscape Videos */}
-      {isLandscape && video.thumbnailUrl && (
+      {isLandscape && !isTheaterFullscreen && video.thumbnailUrl && (
         <div 
           className="absolute inset-0 bg-cover bg-center filter blur-2xl opacity-40 scale-125 pointer-events-none select-none"
           style={{ backgroundImage: `url(${video.thumbnailUrl})` }}
@@ -353,7 +376,11 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
             }
           }}
           onError={handleVideoError}
-          className={`w-full h-full ${isLandscape ? 'object-contain' : 'object-cover'} pointer-events-none transition-all duration-300 z-2`}
+          className={`pointer-events-none transition-all duration-300 z-2 ${
+            isTheaterFullscreen
+              ? (isScreenPortrait ? 'w-[100vh] h-[100vw] object-contain rotate-90 max-w-none max-h-none' : 'w-full h-full object-contain')
+              : (isLandscape ? 'w-full h-full object-contain' : 'w-full h-full object-cover')
+          }`}
         />
       ) : null}
 
@@ -416,13 +443,15 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
       )}
 
       {/* Volume toggle button in corner */}
-      <button
-        onClick={toggleMute}
-        aria-label="Toggle mute"
-        className="absolute top-16 right-4 z-20 w-9 h-9 rounded-full bg-black/50 backdrop-blur-md flex items-center justify-center text-white/90 hover:text-white border border-white/20 active:scale-95 transition-transform"
-      >
-        {isFeedMuted ? <VolumeX className="w-4 h-4 text-rose-400" /> : <Volume2 className="w-4 h-4 text-white" />}
-      </button>
+      {!isTheaterFullscreen && (
+        <button
+          onClick={toggleMute}
+          aria-label="Toggle mute"
+          className="absolute top-16 right-4 z-20 w-9 h-9 rounded-full bg-black/50 backdrop-blur-md flex items-center justify-center text-white/90 hover:text-white border border-white/20 active:scale-95 transition-transform"
+        >
+          {isFeedMuted ? <VolumeX className="w-4 h-4 text-rose-400" /> : <Volume2 className="w-4 h-4 text-white" />}
+        </button>
+      )}
 
       {/* Horizontal Landscape Cinema Mode Button */}
       {isLandscape && !isTheaterFullscreen && !isCleanScreen && (
@@ -441,14 +470,18 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
         </button>
       )}
 
-      {/* Fullscreen Landscape Theater Mode Modal Overlay */}
+      {/* Fullscreen Landscape Theater Mode Overlay */}
       {isTheaterFullscreen && (
         <div 
           onClick={(e) => e.stopPropagation()}
-          className="fixed inset-0 z-50 bg-black flex flex-col justify-between p-4 sm:p-6 animate-fade-in select-none"
+          className={`absolute inset-0 z-30 flex flex-col justify-between select-none pointer-events-none ${
+            isScreenPortrait
+              ? 'w-[100vh] h-[100vw] rotate-90 origin-center p-4'
+              : 'w-full h-full p-4 sm:p-6'
+          }`}
         >
           {/* Top Bar with Title, Handle & Exit Button */}
-          <div className="flex items-center justify-between z-20">
+          <div className="flex items-center justify-between z-20 pointer-events-auto bg-gradient-to-b from-black/80 via-black/40 to-transparent p-2.5 rounded-2xl backdrop-blur-xs">
             <div className="flex items-center gap-2.5 min-w-0">
               <button
                 type="button"
@@ -458,8 +491,8 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
                 <X className="w-5 h-5" />
               </button>
               <div className="min-w-0">
-                <h3 className="text-sm font-bold text-white truncate">{video.title}</h3>
-                <p className="text-[11px] text-amber-400 font-mono">@{video.creator.username} • 16:9 Cinema</p>
+                <h3 className="text-sm font-bold text-white truncate drop-shadow">{video.title}</h3>
+                <p className="text-[11px] text-amber-400 font-mono">@{video.creator?.username} • 16:9 Landscape</p>
               </div>
             </div>
             <div className="flex items-center gap-2 shrink-0">
@@ -495,7 +528,7 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
                 }
               }
             }}
-            className="flex-1 w-full flex items-center justify-center cursor-pointer my-2"
+            className="flex-1 w-full flex items-center justify-center cursor-pointer pointer-events-auto my-2"
           >
             {!isPlaying && (
               <div className="w-16 h-16 rounded-full bg-white/20 backdrop-blur-md flex items-center justify-center border border-white/40 shadow-xl pointer-events-none">
@@ -505,7 +538,7 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
           </div>
 
           {/* Bottom Control Bar */}
-          <div className="flex flex-col gap-2 z-20 bg-neutral-950/85 backdrop-blur-md p-3 sm:p-4 rounded-2xl border border-neutral-800">
+          <div className="flex flex-col gap-2 z-20 bg-neutral-950/85 backdrop-blur-md p-3 sm:p-4 rounded-2xl border border-neutral-800 pointer-events-auto">
             <div 
               onClick={(e) => {
                 const rect = e.currentTarget.getBoundingClientRect();
@@ -550,9 +583,13 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
         </div>
       )}
 
-      {/* Video vignette / gradient overlay for readable texts */}
-      <div className="absolute inset-x-0 bottom-0 h-44 bg-gradient-to-t from-black/90 via-black/40 to-transparent pointer-events-none z-10" />
-      <div className="absolute inset-x-0 top-0 h-28 bg-gradient-to-b from-black/80 via-black/20 to-transparent pointer-events-none z-10" />
+      {/* Video vignette / gradient overlay for readable texts in normal vertical feed */}
+      {!isTheaterFullscreen && (
+        <>
+          <div className="absolute inset-x-0 bottom-0 h-44 bg-gradient-to-t from-black/90 via-black/40 to-transparent pointer-events-none z-10" />
+          <div className="absolute inset-x-0 top-0 h-28 bg-gradient-to-b from-black/80 via-black/20 to-transparent pointer-events-none z-10" />
+        </>
+      )}
     </div>
   );
 };
