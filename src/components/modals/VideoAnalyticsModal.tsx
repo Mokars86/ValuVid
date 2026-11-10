@@ -12,6 +12,7 @@ import {
   Lock
 } from 'lucide-react';
 import { useApp } from '../../context/AppContext';
+import { formatCompactNumber } from '../../utils/formatNumber';
 
 export const VideoAnalyticsModal: React.FC = () => {
   const { analyticsVideo, closeAnalytics } = useApp();
@@ -111,7 +112,7 @@ export const VideoAnalyticsModal: React.FC = () => {
                 <span className="text-xs text-neutral-300">Total Views</span>
               </div>
               <span className="text-xs font-bold text-white">
-                {analyticsVideo.stats.views.toLocaleString()}
+                {formatCompactNumber(analyticsVideo.stats?.views || 0)}
               </span>
             </div>
 
@@ -121,7 +122,7 @@ export const VideoAnalyticsModal: React.FC = () => {
                 <span className="text-xs text-neutral-300">Likes</span>
               </div>
               <span className="text-xs font-bold text-rose-400">
-                {analyticsVideo.stats.likes.toLocaleString()}
+                {formatCompactNumber(analyticsVideo.stats?.likes || 0)}
               </span>
             </div>
 
@@ -131,7 +132,7 @@ export const VideoAnalyticsModal: React.FC = () => {
                 <span className="text-xs text-neutral-300">Comments</span>
               </div>
               <span className="text-xs font-bold text-white">
-                {analyticsVideo.stats.comments.toLocaleString()}
+                {formatCompactNumber(analyticsVideo.stats?.comments || 0)}
               </span>
             </div>
 
@@ -141,7 +142,7 @@ export const VideoAnalyticsModal: React.FC = () => {
                 <span className="text-xs text-neutral-300">Shares</span>
               </div>
               <span className="text-xs font-bold text-white">
-                {analyticsVideo.stats.shares.toLocaleString()}
+                {formatCompactNumber(analyticsVideo.stats?.shares || 0)}
               </span>
             </div>
           </div>

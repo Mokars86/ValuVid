@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import confetti from 'canvas-confetti';
 import { 
   Search, 
@@ -16,11 +16,16 @@ import {
   Play,
   Check,
   ShieldCheck,
-  FilterX
+  FilterX,
+  Plus,
+  User
 } from 'lucide-react';
 import { useApp } from '../../context/AppContext';
 import { BountyChallenge, VideoItem } from '../../types';
 import { sounds } from '../../utils/soundEffects';
+import { getAllKnownUsers, getUserAvatar } from '../../utils/userDirectory';
+import { searchProfilesInSupabase, getDeletedVideoIds } from '../../services/supabaseClient';
+import { formatCompactNumber } from '../../utils/formatNumber';
 
 export const DiscoverScreen: React.FC = () => {
   const { 
@@ -34,14 +39,28 @@ export const DiscoverScreen: React.FC = () => {
     openTipModal,
     setShowSponsorModal,
     showWinPoolModal,
-    setShowWinPoolModal
+    setShowWinPoolModal,
+    toggleFollowCreator,
+    currentUser,
+    discoverSearchQuery,
+    setDiscoverSearchQuery,
+    openCreatorProfile,
+    playVideo
   } = useApp();
 
   const [searchQuery, setSearchQuery] = useState('');
-  const [selectedFilter, setSelectedFilter] = useState<string>('trending');
+  const [selectedFilter, setSelectedFilter] = useState<string>('all');
+
+  // Synchronize incoming deep link queries
+  useEffect(() => {
+    if (discoverSearchQuery) {
+      setSearchQuery(discoverSearchQuery);
+    }
+  }, [discoverSearchQuery]);
   const [activeBountyModal, setActiveBountyModal] = useState<BountyChallenge | null>(null);
   const [bountyTab, setBountyTab] = useState<'overview' | 'submissions' | 'payouts'>('overview');
   const [awardedWinner, setAwardedWinner] = useState<{ creator: string; amount: number; rank: string } | null>(null);
+  const [remoteCreators, setRemoteCreators] = useState<any[]>([]);
 
   const totalWinPoolGHS = useMemo(() => {
     return bounties.reduce((sum, b) => sum + (b.rewardPoolGHS || 0), 0);
@@ -52,37 +71,361 @@ export const DiscoverScreen: React.FC = () => {
   }, [transactions]);
 
   const filters = [
-    { id: 'trending', label: '🔥 Trending' },
-    { id: 'ghana', label: '🇬🇭 Local Ghana' },
-    { id: 'tech', label: '⚡️ Tech & AI' },
-    { id: 'fashion', label: '✨ Fashion & Design' },
-    { id: 'education', label: '🎓 Tutorials' },
-    { id: 'bounties', label: '🏆 Micro-Bounties' },
+    { id: 'all', label: '🔥 Trending & All', badge: 'Live', scope: 'all' },
+    { id: 'global', label: '🌍 Global Scale', badge: 'Worldwide', scope: 'global' },
+    { id: 'local-ghana', label: '🇬🇭 Local African Hub', badge: 'Ghana', scope: 'local' },
+    { id: 'high-engagement', label: '⚡️ High Engagement', badge: 'Viral', scope: 'performance' },
+    { id: 'tech', label: '💻 Tech & AI', badge: 'Code', scope: 'niche' },
+    { id: 'fashion-culture', label: '✨ Culture & Fashion', badge: 'Vibes', scope: 'niche' },
+    { id: 'education', label: '🎓 Tutorials & Skills', badge: 'Learn', scope: 'niche' },
+    { id: 'bounties', label: '🏆 Cash Bounties', badge: 'Escrow', scope: 'bounties' },
   ];
 
-  // Filter videos based on category and search query
+  const cleanQuery = searchQuery.trim().toLowerCase().replace(/^@/, '');
+
+  // Performance engagement calculator: Views + Likes + Comments + Shares + Tips
+  const getEngagementScore = (v: VideoItem) => {
+    const views = v.stats?.views || 0;
+    const likes = v.stats?.likes || 0;
+    const comments = v.stats?.comments || 0;
+    const shares = v.stats?.shares || 0;
+    const tips = v.stats?.tipsCount || 0;
+    return views + likes * 3 + comments * 4 + shares * 5 + tips * 8;
+  };
+
+  // Filter & rank videos based on performance metrics, local Ghanaian/African tags, and global scaling
   const filteredVideos = useMemo(() => {
-    return videos.filter((video) => {
-      const matchesSearch =
-        searchQuery === '' ||
-        video.title.toLowerCase().includes(searchQuery.toLowerCase()) ||
-        video.caption.toLowerCase().includes(searchQuery.toLowerCase()) ||
-        video.creator.username.toLowerCase().includes(searchQuery.toLowerCase()) ||
-        video.hashtags.some((tag) => tag.toLowerCase().includes(searchQuery.toLowerCase()));
+    const deletedIds = getDeletedVideoIds();
+    // 1. Text & creator search filter
+    const searchMatches = videos.filter((video) => {
+      // Exclude system follow/like records, deleted items, and test entries
+      const cat = (video?.category as string) || '';
+      const isInvalid =
+        !video ||
+        deletedIds.includes(video.id) ||
+        video.id === 'test_follow_record' ||
+        video.id.startsWith('test') ||
+        video.id.startsWith('test_') ||
+        (video.title || '').toLowerCase().includes('test follow') ||
+        video.caption === '[DELETED]' ||
+        (video.title || '').includes('[DELETED]') ||
+        video.caption === '[FOLLOW_RECORD]' ||
+        video.caption === '[LIKE_RECORD]' ||
+        cat === 'deleted' ||
+        cat === 'follow_record' ||
+        cat === 'like_record' ||
+        cat === 'user_registry';
+      if (isInvalid) return false;
 
-      const matchesCategory =
-        selectedFilter === 'trending' || video.category === selectedFilter;
+      const creatorUsername = (video.creator?.username || '').toLowerCase();
+      const creatorName = (video.creator?.name || '').toLowerCase();
+      const videoTitle = (video.title || '').toLowerCase();
+      const videoCaption = (video.caption || '').toLowerCase();
 
-      return matchesSearch && matchesCategory;
+      return (
+        !cleanQuery ||
+        creatorUsername.includes(cleanQuery) ||
+        creatorName.includes(cleanQuery) ||
+        videoTitle.includes(cleanQuery) ||
+        videoCaption.includes(cleanQuery) ||
+        (video.hashtags && video.hashtags.some((tag) => tag.toLowerCase().replace(/^#/, '').includes(cleanQuery)))
+      );
     });
-  }, [videos, searchQuery, selectedFilter]);
+
+    // 2. Categorize and rank dynamically based on selected channel & engagement
+    let categorized = searchMatches.filter((video) => {
+      if (selectedFilter === 'all') return true;
+
+      const combinedText = `${video.title} ${video.caption} ${(video.hashtags || []).join(' ')} ${video.category} ${video.creator?.username}`.toLowerCase();
+
+      if (selectedFilter === 'global') {
+        // High reach worldwide videos
+        return (video.stats?.views || 0) > 200 || !combinedText.includes('local');
+      }
+
+      if (selectedFilter === 'local-ghana') {
+        // Local African & Ghanaian creators, culture, or local tags
+        const isGhanaianCreator = ['mokarstech', 'mokarsstitches', 'aaish'].some(
+          (u) => video.creator?.username?.toLowerCase().includes(u)
+        );
+        return (
+          video.category === 'ghana' ||
+          video.category === 'fashion' ||
+          isGhanaianCreator ||
+          combinedText.includes('ghana') ||
+          combinedText.includes('accra') ||
+          combinedText.includes('kumasi') ||
+          combinedText.includes('africa') ||
+          combinedText.includes('momo')
+        );
+      }
+
+      if (selectedFilter === 'high-engagement') {
+        // Top performance engagement (high like/view ratio or high tip count)
+        const score = getEngagementScore(video);
+        return score >= 150 || (video.stats?.likes || 0) >= 15 || (video.stats?.tipsCount || 0) > 0;
+      }
+
+      if (selectedFilter === 'tech') {
+        return (
+          video.category === 'tech' ||
+          video.category === 'education' ||
+          combinedText.includes('tech') ||
+          combinedText.includes('ai') ||
+          combinedText.includes('code') ||
+          combinedText.includes('software') ||
+          combinedText.includes('crypto') ||
+          combinedText.includes('developer')
+        );
+      }
+
+      if (selectedFilter === 'fashion-culture') {
+        return (
+          video.category === 'fashion' ||
+          combinedText.includes('fashion') ||
+          combinedText.includes('style') ||
+          combinedText.includes('art') ||
+          combinedText.includes('design') ||
+          combinedText.includes('music') ||
+          combinedText.includes('dance') ||
+          combinedText.includes('culture')
+        );
+      }
+
+      if (selectedFilter === 'education') {
+        return (
+          video.category === 'education' ||
+          combinedText.includes('tutorial') ||
+          combinedText.includes('learn') ||
+          combinedText.includes('how to') ||
+          combinedText.includes('guide') ||
+          combinedText.includes('masterclass') ||
+          combinedText.includes('skills')
+        );
+      }
+
+      if (selectedFilter === 'bounties') {
+        return video.category === 'bounties' || Boolean(video.bountyTag);
+      }
+
+      return true;
+    });
+
+    // 3. Sort: Prioritize fresh community creations at the top of Top Community Creations
+    return categorized.sort((a, b) => {
+      const isUserA = a.id.startsWith('vid-user-');
+      const isUserB = b.id.startsWith('vid-user-');
+
+      if (isUserA && isUserB) {
+        const timeA = parseInt(a.id.replace('vid-user-', '')) || 0;
+        const timeB = parseInt(b.id.replace('vid-user-', '')) || 0;
+        if (timeA !== timeB) return timeB - timeA;
+      }
+      if (isUserA && !isUserB) return -1;
+      if (!isUserA && isUserB) return 1;
+
+      return getEngagementScore(b) - getEngagementScore(a);
+    });
+  }, [videos, cleanQuery, selectedFilter]);
+
+  // Live asynchronous query to Supabase for creators & users matching search
+  useEffect(() => {
+    if (!cleanQuery) {
+      setRemoteCreators([]);
+      return;
+    }
+    let isSubscribed = true;
+    searchProfilesInSupabase(cleanQuery).then((results) => {
+      if (isSubscribed && results && results.length > 0) {
+        setRemoteCreators(results);
+      }
+    });
+    return () => {
+      isSubscribed = false;
+    };
+  }, [cleanQuery]);
+
+  // Helper to accurately determine if a creator is followed by currentUser
+  const isCreatorFollowed = (creatorId?: string, username?: string) => {
+    if (!creatorId && !username) return false;
+    const cId = (creatorId || '').toLowerCase().trim();
+    const cUser = (username || '').toLowerCase().trim().replace(/^@/, '');
+    try {
+      const raw = localStorage.getItem('valuvid_followed_creators');
+      if (raw) {
+        const followed: string[] = JSON.parse(raw);
+        const set = new Set(followed.map(x => x.toLowerCase().trim().replace(/^@/, '')));
+        if (cUser && set.has(cUser)) return true;
+        if (cId && set.has(cId)) return true;
+      }
+    } catch {}
+    return videos.some(
+      (v) =>
+        ((cId && ((v.creator?.id || '').toLowerCase() === cId || (v.creator?.username || '').toLowerCase() === cId)) ||
+         (cUser && (v.creator?.username || '').toLowerCase().replace(/^@/, '') === cUser)) &&
+        Boolean(v.creator?.isFollowing)
+    );
+  };
+
+  // Comprehensive creator and user matcher across Supabase, local directory & videos (Strictly REAL users)
+  const matchedCreators = useMemo(() => {
+    if (!cleanQuery) return [];
+
+    const isRealVideo = (v: VideoItem) =>
+      v.id !== 'vid-user-1793960000000' &&
+      v.id !== 'vid-user-1' &&
+      v.id !== 'vid-masterclass-1' &&
+      !v.id.startsWith('test-') &&
+      v.caption !== '[USER_REGISTRY]' &&
+      (v.category as string) !== 'user_registry' &&
+      v.caption !== '[DELETED]' &&
+      (v.category as string) !== 'deleted';
+
+    const isMockAccount = (uname?: string) => {
+      if (!uname) return true;
+      const u = uname.toLowerCase().replace(/^@/, '');
+      return (
+        u === 'emmanuel_creator' ||
+        u === 'kwame_code' ||
+        u === 'user_current' ||
+        u === 'user_fintech' ||
+        u === 'demo-creator-1' ||
+        u === 'deleted' ||
+        u.startsWith('test')
+      );
+    };
+
+    const map = new Map<string, {
+      id: string;
+      name: string;
+      username: string;
+      avatar: string;
+      bio?: string;
+      verified?: boolean;
+      followers?: number;
+      isFollowing?: boolean;
+      videoCount: number;
+      firstVideo?: VideoItem;
+    }>();
+
+    // 1. FIRST: Include currently logged-in real user if matching
+    if (currentUser && currentUser.username && !isMockAccount(currentUser.username)) {
+      const cu = currentUser.username.toLowerCase();
+      const cn = (currentUser.name || '').toLowerCase();
+      if (cu.includes(cleanQuery) || cn.includes(cleanQuery)) {
+        const userVideos = videos.filter((v) => isRealVideo(v) && (v.creator?.username || '').toLowerCase() === cu);
+        map.set(cu, {
+          id: currentUser.id || cu,
+          name: currentUser.name || currentUser.username,
+          username: currentUser.username,
+          avatar: getUserAvatar(currentUser.avatar, currentUser.name || currentUser.username),
+          bio: currentUser.bio || 'ValuVid Creator 🇬🇭',
+          verified: currentUser.verified || false,
+          followers: currentUser.followers || 0,
+          isFollowing: false,
+          videoCount: userVideos.length,
+          firstVideo: userVideos[0]
+        });
+      }
+    }
+
+    // 2. Search registered accounts from local directory (signups, logins)
+    const allKnown = getAllKnownUsers();
+    allKnown.forEach((user) => {
+      if (isMockAccount(user.username)) return;
+      const u = (user.username || '').toLowerCase().replace(/^@/, '');
+      const n = (user.name || '').toLowerCase();
+      if ((u.includes(cleanQuery) || n.includes(cleanQuery)) && !map.has(u)) {
+        const userVideos = videos.filter((v) => isRealVideo(v) && (v.creator?.username || '').toLowerCase().replace(/^@/, '') === u);
+        const isFollowed = isCreatorFollowed(user.id, user.username);
+        const rawFollowers = (typeof user.followers === 'number' && user.followers !== 12 && user.followers !== 18 && user.followers !== 24800)
+          ? user.followers
+          : 0;
+        const followers = isFollowed ? Math.max(1, rawFollowers) : rawFollowers;
+        map.set(u, {
+          id: user.id || u,
+          name: user.name || user.username,
+          username: user.username,
+          avatar: getUserAvatar(user.avatar, user.name || user.username),
+          bio: user.bio || 'ValuVid Creator 🇬🇭',
+          verified: user.verified || false,
+          followers: followers,
+          isFollowing: isFollowed,
+          videoCount: userVideos.length,
+          firstVideo: userVideos[0]
+        });
+      }
+    });
+
+    // 3. Search real remote Supabase profiles
+    remoteCreators.forEach((creator) => {
+      if (isMockAccount(creator.username)) return;
+      const u = (creator.username || '').toLowerCase().replace(/^@/, '');
+      const n = (creator.name || '').toLowerCase();
+      if (u.includes(cleanQuery) || n.includes(cleanQuery)) {
+        const userVideos = videos.filter((v) => isRealVideo(v) && (v.creator?.username || '').toLowerCase().replace(/^@/, '') === u);
+        const isFollowed = isCreatorFollowed(creator.id, creator.username);
+        const rawFollowers = (typeof creator.followers === 'number' && creator.followers !== 12 && creator.followers !== 18 && creator.followers !== 24800)
+          ? creator.followers
+          : 0;
+        const followers = isFollowed ? Math.max(1, rawFollowers) : rawFollowers;
+        map.set(u, {
+          id: creator.id || u,
+          name: creator.name || creator.username,
+          username: creator.username,
+          avatar: getUserAvatar(creator.avatar, creator.name || creator.username),
+          bio: creator.bio || 'ValuVid Creator 🇬🇭',
+          verified: creator.verified || false,
+          followers: followers,
+          isFollowing: isFollowed,
+          videoCount: userVideos.length,
+          firstVideo: userVideos[0]
+        });
+      }
+    });
+
+    // 4. Search currently loaded video creators
+    videos.forEach((video) => {
+      if (!isRealVideo(video) || !video.creator?.username || isMockAccount(video.creator.username)) return;
+      const u = video.creator.username.toLowerCase().replace(/^@/, '');
+      const n = (video.creator.name || '').toLowerCase();
+      if (u.includes(cleanQuery) || n.includes(cleanQuery)) {
+        const userVideos = videos.filter((v) => isRealVideo(v) && (v.creator?.username || '').toLowerCase().replace(/^@/, '') === u);
+        const isFollowed = isCreatorFollowed(video.creator.id, video.creator.username) || Boolean(video.creator.isFollowing);
+        const rawFollowers = (typeof video.creator.followers === 'number' && video.creator.followers !== 12 && video.creator.followers !== 18 && video.creator.followers !== 24800)
+          ? video.creator.followers
+          : 0;
+        const followers = isFollowed ? Math.max(1, rawFollowers) : rawFollowers;
+        const existing = map.get(u);
+        if (!existing) {
+          map.set(u, {
+            id: video.creator.id || u,
+            name: video.creator.name || video.creator.username,
+            username: video.creator.username,
+            avatar: getUserAvatar(video.creator.avatar, video.creator.name || video.creator.username),
+            bio: video.creator.bio || 'ValuVid Creator 🇬🇭',
+            verified: video.creator.verified || false,
+            followers: followers,
+            isFollowing: isFollowed,
+            videoCount: userVideos.length,
+            firstVideo: userVideos[0]
+          });
+        } else {
+          existing.followers = followers;
+          existing.isFollowing = isFollowed;
+          if (!existing.firstVideo && userVideos.length > 0) {
+            existing.firstVideo = userVideos[0];
+            existing.videoCount = userVideos.length;
+          }
+        }
+      }
+    });
+
+    return Array.from(map.values());
+  }, [cleanQuery, videos, remoteCreators, currentUser]);
 
   const handleSelectVideo = (video: VideoItem) => {
-    const idx = videos.findIndex((v) => v.id === video.id);
-    if (idx !== -1) {
-      setCurrentVideoIndex(idx);
-      setActiveTab('feed');
-    }
+    playVideo(video);
   };
 
   const handleJoinBounty = (bounty: BountyChallenge) => {
@@ -130,23 +473,36 @@ export const DiscoverScreen: React.FC = () => {
           )}
         </div>
 
-        {/* FEED FILTERS (Horizontal Scroll with shrink-0 buttons) */}
-        <div className="flex items-center gap-1.5 sm:gap-2 overflow-x-auto no-scrollbar pb-1">
+        {/* FEED FILTERS: GLOBAL & LOCAL SCALING CHANNEL CHIPS */}
+        <div className="flex items-center gap-2 overflow-x-auto no-scrollbar pb-1">
           {filters.map((filter) => {
             const isSelected = selectedFilter === filter.id;
             return (
               <button
                 key={filter.id}
                 onClick={() => setSelectedFilter(filter.id)}
-                className={`shrink-0 text-[11px] sm:text-xs px-2.5 sm:px-3.5 py-1 sm:py-1.5 rounded-full whitespace-nowrap transition-all font-medium ${
+                className={`shrink-0 text-[11px] sm:text-xs px-3 py-1.5 rounded-full whitespace-nowrap transition-all flex items-center gap-1.5 font-semibold active:scale-95 ${
                   isSelected
-                    ? 'bg-gradient-to-r from-amber-500 to-amber-600 text-neutral-950 font-bold shadow-md shadow-amber-500/20'
+                    ? 'bg-gradient-to-r from-amber-500 via-amber-400 to-orange-500 text-neutral-950 font-black shadow-md shadow-amber-500/30 scale-[1.02]'
                     : theme === 'light'
-                    ? 'bg-white text-slate-700 hover:bg-slate-100 border border-slate-200 shadow-xs'
-                    : 'bg-neutral-900 text-neutral-300 hover:bg-neutral-800 border border-neutral-800'
+                    ? 'bg-white text-slate-700 hover:bg-slate-100 hover:text-slate-900 border border-slate-200/90 shadow-xs'
+                    : 'bg-neutral-900/90 text-neutral-300 hover:bg-neutral-800 hover:text-white border border-neutral-800 shadow-xs'
                 }`}
               >
-                {filter.label}
+                <span>{filter.label}</span>
+                <span className={`text-[9px] px-1.5 py-0.2 rounded-full font-bold uppercase tracking-wider ${
+                  isSelected
+                    ? 'bg-black/25 text-neutral-950'
+                    : filter.scope === 'local'
+                    ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30'
+                    : filter.scope === 'global'
+                    ? 'bg-cyan-500/20 text-cyan-400 border border-cyan-500/30'
+                    : filter.scope === 'performance'
+                    ? 'bg-amber-500/20 text-amber-400 border border-amber-500/30'
+                    : 'bg-neutral-800 text-neutral-400'
+                }`}>
+                  {filter.badge}
+                </span>
               </button>
             );
           })}
@@ -154,7 +510,125 @@ export const DiscoverScreen: React.FC = () => {
       </div>
 
       <div className="px-3 sm:px-4 py-2.5 sm:py-3 flex flex-col gap-3.5 sm:gap-4">
-        {/* LIVE WIN POOL ESCROW HIGHLIGHT BANNER */}
+        {/* MATCHED CREATORS / USERS SECTION (Shown when searching) */}
+        {cleanQuery && (
+          <div className="flex flex-col gap-2">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-1.5">
+                <Users className="w-3.5 h-3.5 text-amber-500" />
+                <h3 className={`text-xs sm:text-sm font-bold ${theme === 'light' ? 'text-slate-900' : 'text-white'}`}>
+                  Creators & Users ({matchedCreators.length})
+                </h3>
+              </div>
+              <span className={`text-[10px] ${theme === 'light' ? 'text-slate-500' : 'text-neutral-400'}`}>
+                Searching "{searchQuery}"
+              </span>
+            </div>
+
+            {matchedCreators.length > 0 ? (
+              <div className="flex flex-col gap-2">
+                {matchedCreators.map((creator) => (
+                  <div
+                    key={creator.id}
+                    className={`flex items-center justify-between gap-2 p-2.5 sm:p-3 rounded-2xl border transition-all ${
+                      theme === 'light'
+                        ? 'bg-white border-slate-200 hover:border-amber-300 shadow-sm'
+                        : 'bg-neutral-900/90 border-neutral-800 hover:border-neutral-700 shadow-md'
+                    }`}
+                  >
+                    <div 
+                      onClick={() => openCreatorProfile(creator)}
+                      className="flex items-center gap-2.5 sm:gap-3 min-w-0 cursor-pointer group flex-1"
+                      title="Click to view creator profile & videos"
+                    >
+                      <div className="relative shrink-0">
+                        <img
+                          src={creator.avatar}
+                          alt={creator.name}
+                          className="w-10 h-10 sm:w-12 sm:h-12 rounded-full object-cover border-2 border-amber-500/40 group-hover:scale-105 transition-transform shrink-0"
+                          onError={(e) => {
+                            (e.currentTarget as HTMLImageElement).src = getUserAvatar(undefined, creator.name || creator.username);
+                          }}
+                        />
+                        {creator.verified && (
+                          <div className="absolute -bottom-0.5 -right-0.5 bg-amber-500 text-black rounded-full p-0.5 shadow-sm">
+                            <Check className="w-2.5 h-2.5 stroke-[3]" />
+                          </div>
+                        )}
+                      </div>
+
+                      <div className="min-w-0 flex-1 pr-2">
+                        <div className="flex items-center gap-1.5 min-w-0">
+                          <span className={`text-xs sm:text-sm font-bold truncate group-hover:text-amber-500 transition-colors ${theme === 'light' ? 'text-slate-900' : 'text-white'}`}>
+                            {creator.name}
+                          </span>
+                        </div>
+                        <p className={`text-[11px] truncate font-mono ${theme === 'light' ? 'text-amber-800' : 'text-amber-400'}`}>
+                          @{creator.username}
+                        </p>
+                        <div className={`flex items-center gap-1.5 text-[10px] mt-0.5 truncate ${theme === 'light' ? 'text-slate-500' : 'text-neutral-400'}`}>
+                          <span className="shrink-0">{formatCompactNumber(creator.followers || 0)} {creator.followers === 1 ? 'follower' : 'followers'}</span>
+                          <span>•</span>
+                          <span className="shrink-0">{creator.videoCount || 0} {creator.videoCount === 1 ? 'video' : 'videos'}</span>
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="flex items-center gap-1.5 shrink-0">
+                      {creator.username !== currentUser?.username ? (
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            toggleFollowCreator(creator.id || creator.username);
+                          }}
+                          className={`px-3 sm:px-3.5 py-1.5 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 shadow-sm active:scale-95 cursor-pointer shrink-0 ${
+                            creator.isFollowing
+                              ? 'bg-neutral-800/90 hover:bg-neutral-700/90 text-emerald-400 border border-emerald-500/30'
+                              : 'bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-400 hover:to-amber-500 text-neutral-950 font-black shadow-amber-500/20'
+                          }`}
+                          title={creator.isFollowing ? 'Click to unfollow' : 'Follow creator'}
+                        >
+                          {creator.isFollowing ? (
+                            <>
+                              <Check className="w-3.5 h-3.5 stroke-[3] text-emerald-400" />
+                              <span className="text-[11px] sm:text-xs">Following</span>
+                            </>
+                          ) : (
+                            <>
+                              <Plus className="w-3.5 h-3.5 stroke-[3]" />
+                              <span className="text-[11px] sm:text-xs">Follow</span>
+                            </>
+                          )}
+                        </button>
+                      ) : (
+                        <span className={`text-[10px] sm:text-xs font-bold px-2.5 py-1 rounded-lg border shrink-0 ${
+                          theme === 'light' 
+                            ? 'bg-slate-100 text-slate-500 border-slate-200' 
+                            : 'bg-neutral-800 text-neutral-400 border-neutral-700'
+                        }`}>
+                          You
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div className={`p-3.5 rounded-2xl border text-center text-xs ${
+                theme === 'light' 
+                  ? 'bg-white border-slate-200 text-slate-500' 
+                  : 'bg-neutral-900/50 border-neutral-800 text-neutral-400'
+              }`}>
+                No creator accounts matching "@{cleanQuery}". See matching videos below.
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* HIDE PROMOTIONAL HERO BANNERS WHEN ACTIVELY SEARCHING */}
+        {!cleanQuery && (
+          <>
+            {/* LIVE WIN POOL ESCROW HIGHLIGHT BANNER */}
         <div 
           onClick={() => setShowWinPoolModal(true)}
           className={`relative overflow-hidden rounded-2xl border p-3 sm:p-3.5 cursor-pointer active:scale-[0.99] transition-all group ${
@@ -297,15 +771,17 @@ export const DiscoverScreen: React.FC = () => {
             )))}
           </div>
         </div>
+      </>
+    )}
 
         {/* 2-COLUMN MASONRY GRID - OPTIMIZED FOR ALL PHONES (IPHONE SE 375PX & 320PX) */}
         <div>
           <div className="flex items-center justify-between mb-2 sm:mb-3">
             <h3 className={`text-xs sm:text-sm font-bold ${theme === 'light' ? 'text-slate-900' : 'text-neutral-200'}`}>
-              {selectedFilter === 'bounties' ? 'Bounty Video Submissions' : 'Top Community Creations'}
+              {cleanQuery ? `Videos matching "${searchQuery}"` : selectedFilter === 'local-ghana' ? '🇬🇭 Local African Creator Hub' : selectedFilter === 'global' ? '🌍 Global Worldwide Viral Feed' : selectedFilter === 'high-engagement' ? '⚡️ Highest Engagement Velocity' : selectedFilter === 'bounties' ? '🏆 Cash Micro-Bounty Submissions' : '🔥 Top Community Creations'}
             </h3>
             <span className={`text-[11px] sm:text-xs ${theme === 'light' ? 'text-slate-500' : 'text-neutral-400'}`}>
-              {filteredVideos.length} videos
+              {filteredVideos.length} {filteredVideos.length === 1 ? 'video' : 'videos'}
             </span>
           </div>
 
@@ -340,23 +816,37 @@ export const DiscoverScreen: React.FC = () => {
             <div className={`${
               theme === 'light' ? 'bg-white border-slate-200 text-slate-500 shadow-sm' : 'bg-neutral-900/60 border-neutral-800 text-neutral-400'
             } border rounded-2xl p-6 text-center flex flex-col items-center gap-2`}>
-              <FilterX className="w-8 h-8 text-neutral-400" />
-              <p className={`text-xs font-semibold ${theme === 'light' ? 'text-slate-800' : 'text-neutral-300'}`}>No videos match your search or filter</p>
-              <p className={`text-[11px] ${theme === 'light' ? 'text-slate-500' : 'text-neutral-500'}`}>Try searching for other tags or clear the active filter.</p>
-              <button
-                onClick={() => {
-                  setSearchQuery('');
-                  setSelectedFilter('trending');
-                }}
-                className={`mt-1 px-3 py-1 ${
-                  theme === 'light' ? 'bg-amber-100 text-amber-800 border-amber-300 hover:bg-amber-500 hover:text-white' : 'bg-amber-500/20 text-amber-400 border-amber-500/30 hover:bg-amber-500 hover:text-black'
-                } border rounded-xl text-xs font-bold transition-colors`}
-              >
-                Reset Search & Filter
-              </button>
+              <Sparkles className="w-8 h-8 text-amber-500" />
+              <p className={`text-xs font-semibold ${theme === 'light' ? 'text-slate-800' : 'text-neutral-300'}`}>
+                {cleanQuery ? 'No videos match your search' : 'No community creations yet'}
+              </p>
+              <p className={`text-[11px] ${theme === 'light' ? 'text-slate-500' : 'text-neutral-500'}`}>
+                {cleanQuery ? 'Try searching for other tags or clear the active filter.' : 'Be the first creator to upload a video to ValuVid!'}
+              </p>
+              {cleanQuery ? (
+                <button
+                  onClick={() => {
+                    setSearchQuery('');
+                    setSelectedFilter('trending');
+                  }}
+                  className={`mt-1 px-3 py-1 ${
+                    theme === 'light' ? 'bg-amber-100 text-amber-800 border-amber-300 hover:bg-amber-500 hover:text-white' : 'bg-amber-500/20 text-amber-400 border-amber-500/30 hover:bg-amber-500 hover:text-black'
+                  } border rounded-xl text-xs font-bold transition-colors`}
+                >
+                  Reset Search
+                </button>
+              ) : (
+                <button
+                  onClick={() => setActiveTab('create')}
+                  className="mt-1 px-4 py-1.5 bg-gradient-to-r from-amber-500 to-amber-600 text-slate-950 rounded-xl text-xs font-black shadow-md hover:scale-105 active:scale-95 transition-all flex items-center gap-1.5"
+                >
+                  <Plus className="w-3.5 h-3.5" />
+                  Upload First Video
+                </button>
+              )}
             </div>
           ) : (
-            <div className="grid grid-cols-2 gap-2 sm:gap-3">
+            <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-3 lg:grid-cols-4 gap-2 sm:gap-3 md:gap-4">
               {filteredVideos.map((video) => (
                 <div
                   key={video.id}
@@ -368,18 +858,23 @@ export const DiscoverScreen: React.FC = () => {
                   {/* Video Thumbnail */}
                   <div className="relative aspect-[9/13] w-full overflow-hidden bg-neutral-950">
                     <img
-                      src={video.thumbnailUrl}
+                      src={video.thumbnailUrl || '/default-avatar.svg'}
                       alt={video.title}
                       className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
+                      onError={(e) => {
+                        (e.currentTarget as HTMLImageElement).src = '/default-avatar.svg';
+                      }}
                     />
 
-                    {/* Top Tip Badge Overlay */}
-                    <div className="absolute top-1.5 left-1.5 sm:top-2 sm:left-2 z-10 flex items-center gap-1 bg-neutral-950/85 backdrop-blur-md px-1.5 sm:px-2 py-0.5 rounded-full border border-amber-400/40 shadow-md">
-                      <Coins className="w-2.5 h-2.5 sm:w-3 sm:h-3 text-amber-400" />
-                      <span className="text-[9px] sm:text-[10px] font-bold text-amber-300 leading-tight">
-                        GHS {video.stats.tipsTotalGHS.toFixed(1)}
-                      </span>
-                    </div>
+                    {/* Top Tip Badge Overlay - Only shown when tips are earned */}
+                    {(video.stats?.tipsTotalGHS || 0) > 0 && (
+                      <div className="absolute top-1.5 left-1.5 sm:top-2 sm:left-2 z-10 flex items-center gap-1 bg-neutral-950/85 backdrop-blur-md px-1.5 sm:px-2 py-0.5 rounded-full border border-amber-400/40 shadow-md">
+                        <Coins className="w-2.5 h-2.5 sm:w-3 sm:h-3 text-amber-400" />
+                        <span className="text-[9px] sm:text-[10px] font-bold text-amber-300 leading-tight">
+                          GHS {video.stats.tipsTotalGHS.toFixed(1)}
+                        </span>
+                      </div>
+                    )}
 
                     {/* Locked badge if gated */}
                     {video.isPayPerUnlock && !video.isUnlocked && (
@@ -391,7 +886,7 @@ export const DiscoverScreen: React.FC = () => {
                     {/* Views count */}
                     <div className="absolute bottom-1.5 left-1.5 sm:bottom-2 sm:left-2 z-10 flex items-center gap-1 text-[9px] sm:text-[10px] text-white/90 drop-shadow-md">
                       <Eye className="w-2.5 h-2.5 sm:w-3 sm:h-3" />
-                      <span>{video.stats.views.toLocaleString()}</span>
+                      <span>{formatCompactNumber(video.stats?.views || 0)}</span>
                     </div>
 
                     {/* Gradient overlay */}
@@ -409,9 +904,12 @@ export const DiscoverScreen: React.FC = () => {
                     <div className="flex items-center justify-between text-[10px] sm:text-[11px] gap-1 min-w-0">
                       <div className="flex items-center gap-1 sm:gap-1.5 min-w-0 flex-1">
                         <img
-                          src={video.creator.avatar}
+                          src={getUserAvatar(video.creator.avatar, video.creator.username)}
                           alt={video.creator.username}
                           className="w-3.5 h-3.5 sm:w-4 sm:h-4 rounded-full object-cover shrink-0"
+                          onError={(e) => {
+                            (e.currentTarget as HTMLImageElement).src = '/default-avatar.svg';
+                          }}
                         />
                         <span className={`truncate text-[10px] sm:text-[11px] ${theme === 'light' ? 'text-slate-600' : 'text-neutral-400'}`}>@{video.creator.username}</span>
                       </div>
@@ -668,7 +1166,7 @@ export const DiscoverScreen: React.FC = () => {
                               {v.title}
                             </div>
                             <div className={`flex items-center gap-1.5 text-[9px] sm:text-[10px] mt-0.5 truncate ${theme === 'light' ? 'text-slate-500' : 'text-neutral-400'}`}>
-                              <span className={`font-medium ${theme === 'light' ? 'text-cyan-700' : 'text-cyan-300'}`}>{(v.stats?.views || 0).toLocaleString()} views</span>
+                              <span className={`font-medium ${theme === 'light' ? 'text-cyan-700' : 'text-cyan-300'}`}>{formatCompactNumber(v.stats?.views || 0)} views</span>
                               <span>•</span>
                               <span className={`font-bold truncate ${theme === 'light' ? 'text-amber-700' : 'text-amber-400'}`}>GHS {prize.toFixed(0)} Prize</span>
                             </div>

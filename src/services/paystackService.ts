@@ -51,6 +51,7 @@ export interface BountyEscrowRecord {
   developerCommissionGHS: number;
   totalFundedGHS: number;
   paystackReference: string;
+  durationDays?: number;
   status: 'ESCROW_LOCKED' | 'PAYOUT_IN_PROGRESS' | 'COMPLETED' | 'REFUNDED';
   createdAt: string;
   releasedAt?: string;

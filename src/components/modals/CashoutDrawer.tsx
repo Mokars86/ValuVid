@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import confetti from 'canvas-confetti';
 import { 
   ArrowUpRight, 
@@ -35,7 +35,7 @@ export const CashoutDrawer: React.FC = () => {
   );
   const [cashoutAmount, setCashoutAmount] = useState<number>(50);
   const [isSuccess, setIsSuccess] = useState(false);
-  const [receiptData, setReceiptData] = useState<{ amount: number; method: string; ref: string } | null>(null);
+  const [receiptData, setReceiptData] = useState<{ amount: number; method: string; ref: string; isPending?: boolean } | null>(null);
 
   // Quick inline add channel state inside drawer
   const [showAddInDrawer, setShowAddInDrawer] = useState(payoutMethods.length === 0);
@@ -44,6 +44,19 @@ export const CashoutDrawer: React.FC = () => {
   const [bankBranch, setBankBranch] = useState('');
   const [newNum, setNewNum] = useState('');
   const [newName, setNewName] = useState(currentUser.name || 'ValuVid Creator');
+
+  // Synchronize active payout channel whenever drawer opens or methods update
+  useEffect(() => {
+    if (payoutMethods.length > 0) {
+      const def = payoutMethods.find((m) => m.isDefault) || payoutMethods[0];
+      if (def && (!selectedMethodId || !payoutMethods.some((m) => m.id === selectedMethodId))) {
+        setSelectedMethodId(def.id);
+      }
+      setShowAddInDrawer(false);
+    } else {
+      setShowAddInDrawer(true);
+    }
+  }, [cashoutDrawerOpen, payoutMethods, selectedMethodId]);
 
   if (!cashoutDrawerOpen) return null;
 
@@ -85,6 +98,7 @@ export const CashoutDrawer: React.FC = () => {
         amount: cashoutAmount,
         method: selectedMethod.name,
         ref: paystackTransferRef,
+        isPending: !currentUser?.isPro,
       });
       setIsSuccess(true);
     }
@@ -103,15 +117,18 @@ export const CashoutDrawer: React.FC = () => {
       methodName = bankBranch.trim() ? `${selectedBank} (${bankBranch.trim()})` : selectedBank;
     }
 
-    addPayoutMethod({
+    const newId = addPayoutMethod({
       type: newType,
       name: methodName,
       accountNumber: newNum.trim(),
       accountHolder: newName.trim(),
-      isDefault: payoutMethods.length === 0,
+      isDefault: true,
       iconType: newType === 'bank' ? 'bank' : 'momo',
     });
 
+    if (newId) {
+      setSelectedMethodId(newId);
+    }
     setShowAddInDrawer(false);
     setNewNum('');
     setBankBranch('');
@@ -152,12 +169,22 @@ export const CashoutDrawer: React.FC = () => {
 
         {isSuccess && receiptData ? (
           <div className="py-4 flex flex-col items-center justify-center text-center animate-fade-in">
-            <div className="w-16 h-16 rounded-full bg-emerald-500/20 border-2 border-emerald-400 flex items-center justify-center mb-3">
-              <CheckCircle2 className="w-8 h-8 text-emerald-500" />
+            <div className={`w-16 h-16 rounded-full ${
+              receiptData.isPending ? 'bg-amber-500/20 border-2 border-amber-400' : 'bg-emerald-500/20 border-2 border-emerald-400'
+            } flex items-center justify-center mb-3`}>
+              {receiptData.isPending ? (
+                <Clock className="w-8 h-8 text-amber-500" />
+              ) : (
+                <CheckCircle2 className="w-8 h-8 text-emerald-500" />
+              )}
             </div>
-            <h4 className={`text-base font-bold ${theme === 'light' ? 'text-slate-900' : 'text-white'}`}>Payout Dispatched!</h4>
-            <p className={`text-xs ${theme === 'light' ? 'text-slate-600' : 'text-neutral-300'} mt-1`}>
-              Funds transferred instantly to your Mobile Money account via Paystack.
+            <h4 className={`text-base font-bold ${theme === 'light' ? 'text-slate-900' : 'text-white'}`}>
+              {receiptData.isPending ? 'Payout Queued (Processing)' : 'Payout Dispatched!'}
+            </h4>
+            <p className={`text-xs ${theme === 'light' ? 'text-slate-600' : 'text-neutral-300'} mt-1 max-w-xs leading-relaxed`}>
+              {receiptData.isPending
+                ? 'Your payout is queued in the scheduled batch queue (within 24–48 hours) as a Free Creator Tier holder. Funds will disburse automatically to your Mobile Money account once escrow float is verified.'
+                : 'Funds transferred instantly to your Mobile Money account via Paystack Priority Rails.'}
             </p>
 
             {/* Receipt Card */}
@@ -165,9 +192,15 @@ export const CashoutDrawer: React.FC = () => {
               theme === 'light' ? 'bg-slate-50 border-slate-200' : 'bg-neutral-950 border-neutral-800'
             } border rounded-2xl p-4 my-4 text-left flex flex-col gap-2`}>
               <div className={`flex items-center justify-between text-xs ${theme === 'light' ? 'text-slate-500' : 'text-neutral-400'}`}>
-                <span>Amount Paid:</span>
+                <span>Amount:</span>
                 <span className="text-base font-black text-emerald-500">
                   GHS {receiptData.amount.toFixed(2)}
+                </span>
+              </div>
+              <div className={`flex items-center justify-between text-xs ${theme === 'light' ? 'text-slate-500' : 'text-neutral-400'}`}>
+                <span>Payout Status:</span>
+                <span className={`font-bold ${receiptData.isPending ? 'text-amber-500' : 'text-emerald-500'}`}>
+                  {receiptData.isPending ? 'Pending Batch Queue (24-48h)' : 'Completed (Instant)'}
                 </span>
               </div>
               <div className={`flex items-center justify-between text-xs ${theme === 'light' ? 'text-slate-500' : 'text-neutral-400'}`}>
@@ -179,7 +212,7 @@ export const CashoutDrawer: React.FC = () => {
                 <span className={`font-mono ${theme === 'light' ? 'text-slate-900' : 'text-white'}`}>{selectedMethod?.accountNumber}</span>
               </div>
               <div className={`flex items-center justify-between text-xs ${theme === 'light' ? 'text-slate-500' : 'text-neutral-400'}`}>
-                <span>Paystack Ref:</span>
+                <span>Reference:</span>
                 <span className="text-amber-500 font-mono font-bold">{receiptData.ref}</span>
               </div>
               <div className={`flex items-center justify-between text-xs ${theme === 'light' ? 'text-slate-500 border-slate-200' : 'text-neutral-400 border-neutral-900'} pt-2 border-t`}>
@@ -187,6 +220,27 @@ export const CashoutDrawer: React.FC = () => {
                 <span className="text-emerald-500 font-bold">GHS 0.00 (Zero Fee)</span>
               </div>
             </div>
+
+            {receiptData.isPending && (
+              <div className={`w-full p-3 rounded-xl border mb-3 text-left flex items-center justify-between gap-2 ${
+                theme === 'light' ? 'bg-amber-50 border-amber-200 text-amber-900' : 'bg-amber-500/10 border-amber-500/20 text-amber-300'
+              }`}>
+                <div className="text-[10px] leading-tight">
+                  <span className="font-bold block">Need instant zero-wait cashouts?</span>
+                  <span className={theme === 'light' ? 'text-amber-800' : 'text-neutral-400'}>Pro Creator Tier members bypass the batch queue.</span>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => {
+                    handleClose();
+                    setShowProModal(true);
+                  }}
+                  className="px-2.5 py-1 text-[10px] bg-amber-500 text-black font-bold rounded-lg shrink-0"
+                >
+                  View Pro
+                </button>
+              </div>
+            )}
 
             <button
               onClick={handleClose}
@@ -267,12 +321,12 @@ export const CashoutDrawer: React.FC = () => {
               <div className={`flex items-center justify-between text-[10px] ${theme === 'light' ? 'text-slate-500' : 'text-neutral-400'}`}>
                 <span>Withdrawal Frequency:</span>
                 <span className={`font-semibold ${theme === 'light' ? 'text-slate-900' : 'text-white'}`}>
-                  {cashoutLimitInfo.isProMember ? 'Twice a week (2x / 7 days)' : 'Once a week (1x / 7 days)'}
+                  {cashoutLimitInfo.isProMember ? 'Twice a week (2x / 7 days)' : 'Once a month (1x / 30 days)'}
                 </span>
               </div>
 
               <div className={`flex items-center justify-between text-[10px] ${theme === 'light' ? 'text-slate-500 border-slate-200' : 'text-neutral-400 border-neutral-900'} pt-1 border-t`}>
-                <span>Remaining this week:</span>
+                <span>Remaining this {cashoutLimitInfo.isProMember ? 'week' : 'month'}:</span>
                 <span className={`font-bold ${cashoutLimitInfo.remainingThisWeek > 0 ? (theme === 'light' ? 'text-emerald-600' : 'text-emerald-400') : 'text-rose-500'}`}>
                   {cashoutLimitInfo.remainingThisWeek} of {cashoutLimitInfo.maxPerWeek} available
                 </span>
@@ -284,7 +338,7 @@ export const CashoutDrawer: React.FC = () => {
                 } border p-2.5 rounded-xl flex flex-col gap-1.5`}>
                   <div className={`flex items-center gap-1.5 text-[10px] font-bold ${theme === 'light' ? 'text-rose-700' : 'text-rose-300'}`}>
                     <Clock className="w-3.5 h-3.5 text-rose-500 shrink-0" />
-                    <span>Weekly withdrawal limit reached</span>
+                    <span>{cashoutLimitInfo.isProMember ? 'Weekly' : 'Monthly'} withdrawal limit reached</span>
                   </div>
                   {cashoutLimitInfo.nextAvailableDate && (
                     <span className={`text-[9px] ${theme === 'light' ? 'text-slate-600' : 'text-neutral-300'}`}>

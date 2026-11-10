@@ -4,6 +4,9 @@ class SoundManager {
   playLikePop() {}
   playRewardTick() {}
   playSuccessPayout() {}
+  playCashOut() {}
+  playCoinReward() {}
+  playUpload() {}
 }
 
 export const sounds = new SoundManager();

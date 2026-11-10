@@ -195,15 +195,20 @@ export function recordNewRegistration(params: {
  */
 export function validatePayoutChannelExclusivity(accountNumber: string, currentUsername: string): { allowed: boolean; reason?: string } {
   const cleanNumber = accountNumber.replace(/[^\d+]/g, '');
+  if (!cleanNumber || cleanNumber.length < 7) {
+    return { allowed: true };
+  }
   const identities = getRegisteredIdentities();
 
   // If this phone/number belongs to a different registered user
   const conflict = identities.find((id) => {
+    if (!id.phone) return false;
     const registeredPhoneClean = id.phone.replace(/[^\d+]/g, '');
+    if (registeredPhoneClean.length < 7) return false;
     return registeredPhoneClean.endsWith(cleanNumber) || cleanNumber.endsWith(registeredPhoneClean);
   });
 
-  if (conflict && conflict.username.toLowerCase() !== currentUsername.toLowerCase()) {
+  if (conflict && currentUsername && conflict.username.toLowerCase() !== currentUsername.toLowerCase()) {
     return {
       allowed: false,
       reason: `This Mobile Money / Bank number is already bound to @${conflict.username}. Payout channels cannot be shared across multiple accounts to comply with anti-fraud liquidity policies.`,

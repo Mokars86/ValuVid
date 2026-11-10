@@ -122,7 +122,7 @@ export const ProSubscriptionModal: React.FC = () => {
                 '2.5x Algorithm Spotlight in Discover & For You Feed',
                 'Official Gold Creator Badge & Custom Tipping Tiers',
                 'Instant 0% Payout Fee to MTN MoMo & Telecel',
-                'Twice-Weekly Withdrawal Frequency (Free: 1x/week • Pro: 2x/week)',
+                'Expedited Twice-Weekly Withdrawals (Free: 1x/month • Pro: 2x/week)',
               ].map((feat, i) => (
                 <div key={i} className={`flex items-start gap-2 text-xs ${isLight ? 'text-slate-700' : 'text-neutral-200'}`}>
                   <Check className={`w-3.5 h-3.5 shrink-0 mt-0.5 ${isLight ? 'text-cyan-600' : 'text-cyan-400'}`} />

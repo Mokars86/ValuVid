@@ -14,6 +14,8 @@ import {
   ChevronRight
 } from 'lucide-react';
 import { useApp } from '../../context/AppContext';
+import { formatCompactNumber } from '../../utils/formatNumber';
+import { buildVideoShareUrl } from '../../utils/urlHelper';
 
 export const ShareModal: React.FC = () => {
   const { shareModalVideo, closeShareModal, currentUser, incrementShareCount, setShareToast, openAnalytics, theme } = useApp();
@@ -23,7 +25,7 @@ export const ShareModal: React.FC = () => {
 
   const isLight = theme === 'light';
 
-  const shareUrl = `https://valuvid.app/v/${shareModalVideo.id}?ref=${currentUser?.username || 'curator'}`;
+  const shareUrl = buildVideoShareUrl(shareModalVideo.id, currentUser?.username);
   const shareText = `Watch "${shareModalVideo.title}" by @${shareModalVideo.creator?.username} on ValuVid 🇬🇭✨`;
 
   const handleCopyLink = () => {
@@ -114,7 +116,7 @@ export const ShareModal: React.FC = () => {
               by @{shareModalVideo.creator?.username}
             </div>
             <div className={`flex items-center gap-2 text-[9px] mt-1 ${isLight ? 'text-slate-500' : 'text-neutral-400'}`}>
-              <span className={`font-bold ${isLight ? 'text-cyan-700' : 'text-cyan-300'}`}>{(shareModalVideo.stats?.shares || 0) + 1} shares</span>
+              <span className={`font-bold ${isLight ? 'text-cyan-700' : 'text-cyan-300'}`}>{formatCompactNumber(shareModalVideo.stats?.shares || 0)} shares</span>
               <span>•</span>
               <span className={`font-bold ${isLight ? 'text-amber-700' : 'text-amber-400'}`}>GHS {(shareModalVideo.stats?.tipsTotalGHS || 0).toFixed(1)} Tips</span>
             </div>
@@ -259,7 +261,7 @@ export const ShareModal: React.FC = () => {
                 </span>
               </div>
               <div className={`text-[10px] ${isLight ? 'text-slate-500' : 'text-neutral-400'}`}>
-                {(shareModalVideo.stats?.views || 0).toLocaleString()} views • GHS {(shareModalVideo.stats?.tipsTotalGHS || 0).toFixed(2)} earned
+                {formatCompactNumber(shareModalVideo.stats?.views || 0)} views • GHS {(shareModalVideo.stats?.tipsTotalGHS || 0).toFixed(2)} earned
               </div>
             </div>
           </div>

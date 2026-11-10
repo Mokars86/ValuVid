@@ -168,53 +168,53 @@ export const CommentDrawer: React.FC = () => {
                 <img
                   src={comment.user.avatar}
                   alt={comment.user.username}
-                  className="w-8 h-8 rounded-full object-cover shrink-0 border border-slate-200"
+                  className="w-9 h-9 rounded-full object-cover shrink-0 border border-slate-200"
                 />
 
-                <div className="flex-1 flex flex-col gap-1">
+                <div className="flex-1 flex flex-col gap-1.5">
                   <div className="flex items-center justify-between">
-                    <div className="flex items-center gap-1.5 flex-wrap">
-                      <span className={`text-xs font-bold ${isLight ? 'text-slate-900' : 'text-white'}`}>
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <span className={`text-sm font-bold ${isLight ? 'text-slate-900' : 'text-white'}`}>
                         @{comment.user.username}
                       </span>
 
                       {comment.isPinned && (
-                        <span className={`flex items-center gap-0.5 text-[9px] font-bold px-1.5 py-0.2 rounded border ${
+                        <span className={`flex items-center gap-1 text-[10px] font-bold px-2 py-0.5 rounded border ${
                           isLight ? 'text-amber-800 bg-amber-100 border-amber-300' : 'text-amber-400 bg-amber-950 border-amber-800'
                         }`}>
-                          <Pin className="w-2.5 h-2.5" /> Pinned
+                          <Pin className="w-3 h-3" /> Pinned
                         </span>
                       )}
 
                       {/* Golden Tipper Badge */}
                       {comment.tipAmountGHS && (
-                        <span className={`flex items-center gap-1 text-[9px] font-bold px-2 py-0.2 rounded-full border ${
+                        <span className={`flex items-center gap-1 text-[10px] font-bold px-2 py-0.5 rounded-full border ${
                           isLight ? 'text-amber-800 bg-amber-100 border-amber-300' : 'text-amber-300 bg-amber-500/20 border-amber-400/40'
                         }`}>
-                          <Coins className="w-2.5 h-2.5 text-amber-500" />
+                          <Coins className="w-3 h-3 text-amber-500" />
                           Tipped GHS {comment.tipAmountGHS.toFixed(2)}
                         </span>
                       )}
                     </div>
 
-                    <span className={`text-[10px] ${isLight ? 'text-slate-400' : 'text-neutral-500'}`}>
+                    <span className={`text-xs ${isLight ? 'text-slate-400' : 'text-neutral-500'}`}>
                       {comment.createdAt}
                     </span>
                   </div>
 
-                  <p className={`text-xs leading-snug ${isLight ? 'text-slate-700' : 'text-neutral-200'}`}>
+                  <p className={`text-sm min-[380px]:text-[15px] leading-relaxed break-words ${isLight ? 'text-slate-800' : 'text-neutral-100'}`}>
                     {comment.text}
                   </p>
 
-                  <div className={`flex items-center gap-4 text-[10px] mt-1 ${isLight ? 'text-slate-500' : 'text-neutral-400'}`}>
+                  <div className={`flex items-center gap-4 text-xs mt-1 ${isLight ? 'text-slate-500' : 'text-neutral-400'}`}>
                     <button 
                       type="button"
                       onClick={() => toggleCommentLike(comment.id)}
-                      className={`flex items-center gap-1 transition-colors ${
+                      className={`flex items-center gap-1.5 transition-colors ${
                         likedComments[comment.id] ? 'text-rose-500 font-bold' : 'hover:text-rose-400'
                       }`}
                     >
-                      <Heart className={`w-3 h-3 ${likedComments[comment.id] ? 'fill-rose-500 text-rose-500' : ''}`} />
+                      <Heart className={`w-3.5 h-3.5 ${likedComments[comment.id] ? 'fill-rose-500 text-rose-500' : ''}`} />
                       <span>{(comment.likes || 0) + (likedComments[comment.id] ? 1 : 0)}</span>
                     </button>
                     <button 
@@ -247,7 +247,7 @@ export const CommentDrawer: React.FC = () => {
               placeholder="Add a comment... (or tip to highlight!)"
               value={newCommentText}
               onChange={(e) => setNewCommentText(e.target.value)}
-              className={`flex-1 rounded-xl px-3 py-2 text-xs focus:outline-none ${
+              className={`flex-1 rounded-xl px-3.5 py-2.5 text-sm min-[380px]:text-[15px] focus:outline-none ${
                 isLight 
                   ? 'bg-slate-100 border border-slate-200 text-slate-900 placeholder-slate-400 focus:border-amber-500' 
                   : 'bg-neutral-900 border border-neutral-800 text-white placeholder-neutral-500 focus:border-amber-400'
@@ -256,7 +256,7 @@ export const CommentDrawer: React.FC = () => {
             <button
               type="submit"
               disabled={!newCommentText.trim()}
-              className="w-9 h-9 rounded-xl bg-amber-500 disabled:bg-neutral-800 text-neutral-950 disabled:text-neutral-500 flex items-center justify-center font-bold active:scale-95 transition-transform"
+              className="w-10 h-10 rounded-xl bg-amber-500 disabled:bg-neutral-800 text-neutral-950 disabled:text-neutral-500 flex items-center justify-center font-bold active:scale-95 transition-transform shrink-0"
             >
               <Send className="w-4 h-4" />
             </button>

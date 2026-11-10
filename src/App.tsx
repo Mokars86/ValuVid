@@ -27,6 +27,11 @@ import { CommunityGoalModal } from './components/modals/CommunityGoalModal';
 import { SkillQuizModal } from './components/modals/SkillQuizModal';
 import { SettingsPage } from './components/settings/SettingsPage';
 import { AuthModal } from './components/auth/AuthModal';
+import { CreatorProfileModal } from './components/discover/CreatorProfileModal';
+import { ProductCheckoutModal } from './components/modals/ProductCheckoutModal';
+import { supabase, fetchUserProfileFromSupabase } from './services/supabaseClient';
+import { getUserAvatar } from './utils/userDirectory';
+import { VideoItem } from './types';
 
 const AppContent: React.FC = () => {
   const { 
@@ -66,7 +71,20 @@ const AppContent: React.FC = () => {
     closeCommunityGoalModal,
     selectedSkillQuizVideo,
     closeSkillQuizModal,
-    setShareToast
+    setShareToast,
+    videos,
+    setVideos,
+    setFeedFilter,
+    setCurrentVideoIndex,
+    setDiscoverSearchQuery,
+    selectedCreatorProfile,
+    openCreatorProfile,
+    closeCreatorProfile,
+    playVideo,
+    currentUser,
+    selectedProduct,
+    isProductCheckoutOpen,
+    closeProductCheckout
   } = useApp();
 
   // Keep a ref to the latest state for the hardware back button handler
@@ -88,7 +106,8 @@ const AppContent: React.FC = () => {
     selectedAiDisclosureVideo,
     selectedValuSplitVideo,
     selectedCommunityGoalVideo,
-    selectedSkillQuizVideo
+    selectedSkillQuizVideo,
+    selectedCreatorProfile
   });
 
   useEffect(() => {
@@ -110,7 +129,8 @@ const AppContent: React.FC = () => {
       selectedAiDisclosureVideo,
       selectedValuSplitVideo,
       selectedCommunityGoalVideo,
-      selectedSkillQuizVideo
+      selectedSkillQuizVideo,
+      selectedCreatorProfile
     };
   });
 
@@ -192,6 +212,10 @@ const AppContent: React.FC = () => {
         closeSkillQuizModal();
         return;
       }
+      if (state.selectedCreatorProfile) {
+        closeCreatorProfile();
+        return;
+      }
 
       // 2. Tab Navigation: return to main Feed
       if (state.activeTab !== 'feed') {
@@ -233,6 +257,182 @@ const AppContent: React.FC = () => {
     setShareToast
   ]);
 
+  // Deep-linking URL query param listener (shared video & profile links)
+  useEffect(() => {
+    const handleIncomingUrl = async (urlStr: string) => {
+      try {
+        let videoParam: string | null = null;
+        let userParam: string | null = null;
+        let refParam: string | null = null;
+
+        try {
+          const url = new URL(urlStr);
+          videoParam = url.searchParams.get('v') || url.searchParams.get('video');
+          userParam = url.searchParams.get('user') || url.searchParams.get('creator') || url.searchParams.get('profile');
+          refParam = url.searchParams.get('ref');
+
+          // Check if path is in format /v/<videoId> or /@<username>
+          if (!videoParam && url.pathname.startsWith('/v/')) {
+            videoParam = url.pathname.replace(/^\/v\//, '').split('/')[0];
+          }
+          if (!userParam && url.pathname.startsWith('/@')) {
+            userParam = url.pathname.replace(/^\/@/, '').split('/')[0];
+          }
+        } catch {
+          // If relative URL or search string
+          const search = urlStr.includes('?') ? urlStr.split('?')[1] : urlStr;
+          const params = new URLSearchParams(search);
+          videoParam = params.get('v') || params.get('video');
+          userParam = params.get('user') || params.get('creator') || params.get('profile');
+          refParam = params.get('ref');
+        }
+
+        if (refParam) {
+          try {
+            localStorage.setItem('valuvid_last_curator_ref', refParam);
+          } catch {}
+        }
+
+        if (videoParam) {
+          const vId = videoParam;
+          let targetVideo: VideoItem | undefined = videos.find((v) => v.id === vId);
+
+          // If not in current in-memory videos, check Supabase
+          if (!targetVideo) {
+            try {
+              const { data, error } = await supabase
+                .from('videos')
+                .select('*')
+                .eq('id', vId)
+                .maybeSingle();
+
+              if (!error && data && data.category !== 'deleted' && data.category !== 'user_registry' && data.category !== 'like_record' && data.category !== 'follow_record') {
+                targetVideo = {
+                  id: data.id,
+                  title: data.title || 'Shared Video',
+                  caption: data.caption || '',
+                  videoUrl: data.video_url || '/videos/jet_li_vs_vandam.mp4',
+                  thumbnailUrl: data.thumbnail_url || 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=600&auto=format&fit=crop&q=80',
+                  category: data.category || 'trending',
+                  hashtags: data.hashtags || ['valuvid'],
+                  creator: data.creator_data || {
+                    id: data.creator_id || 'creator',
+                    name: 'ValuVid Creator',
+                    username: 'creator',
+                    followers: 0,
+                    following: 0,
+                  },
+                  stats: data.stats || {
+                    likes: 0,
+                    comments: 0,
+                    shares: 0,
+                    views: 1,
+                    saves: 0,
+                    tipsTotalGHS: 0,
+                    tipsCount: 0,
+                  },
+                  audioTrack: data.audio_track || { title: 'Original Sound', artist: 'ValuVid' },
+                  isPayPerUnlock: data.is_pay_per_unlock || false,
+                  unlockPriceGHS: data.unlock_price_ghs || 0,
+                  isUnlocked: !data.is_pay_per_unlock,
+                  watchRewardGHSPerMin: 0.02,
+                  durationSeconds: 30,
+                  isAiContent: data.is_ai_content || false,
+                  aiDisclosureType: data.ai_disclosure_type || 'none',
+                  aiToolsUsed: data.ai_tools_used || [],
+                };
+              }
+            } catch (err) {
+              console.warn('[DeepLink] Failed to fetch video from Supabase:', err);
+            }
+          }
+
+          if (targetVideo) {
+            // Move/prepend target video to index 0 so it plays immediately on Feed
+            setVideos((prev) => [targetVideo!, ...prev.filter((v) => v.id !== targetVideo!.id)]);
+            setFeedFilter('foryou');
+            setCurrentVideoIndex(0);
+            setActiveTab('feed');
+            setShareToast(`Playing: ${targetVideo.title || 'Shared Video'} 🎬`);
+          } else {
+            // Fallback: go to feed and play first video
+            setActiveTab('feed');
+            setCurrentVideoIndex(0);
+            setShareToast('Video not found or removed');
+          }
+
+          // Clean URL query parameters to avoid re-triggering on state change
+          if (typeof window !== 'undefined' && window.history?.replaceState) {
+            window.history.replaceState({}, document.title, window.location.pathname);
+          }
+        } else if (userParam) {
+          const cleanUser = userParam.replace(/^@/, '').trim();
+          
+          if (currentUser && currentUser.username.toLowerCase() === cleanUser.toLowerCase()) {
+            setActiveTab('profile');
+          } else {
+            const creatorVideo = videos.find(
+              (v) => v.creator?.username?.toLowerCase() === cleanUser.toLowerCase()
+            );
+            const avatar = creatorVideo?.creator?.avatar || getUserAvatar(cleanUser);
+            const name = creatorVideo?.creator?.name || cleanUser;
+
+            try {
+              const profileData = await fetchUserProfileFromSupabase(cleanUser);
+              openCreatorProfile({
+                id: cleanUser,
+                name: name,
+                username: cleanUser,
+                avatar: avatar,
+                bio: creatorVideo?.creator?.bio || `ValuVid Creator`,
+                followers: profileData?.followers ?? creatorVideo?.creator?.followers ?? 0,
+                following: profileData?.following ?? creatorVideo?.creator?.following ?? 0,
+                isFollowing: false,
+              });
+            } catch {
+              openCreatorProfile({
+                id: cleanUser,
+                name: name,
+                username: cleanUser,
+                avatar: avatar,
+                bio: creatorVideo?.creator?.bio || `ValuVid Creator`,
+                followers: creatorVideo?.creator?.followers ?? 0,
+                following: creatorVideo?.creator?.following ?? 0,
+                isFollowing: false,
+              });
+            }
+          }
+
+          setShareToast(`Viewing creator @${cleanUser} 👤`);
+
+          // Clean URL query parameters
+          if (typeof window !== 'undefined' && window.history?.replaceState) {
+            window.history.replaceState({}, document.title, window.location.pathname);
+          }
+        }
+      } catch (err) {
+        console.warn('[DeepLink] Parse error:', err);
+      }
+    };
+
+    // 1. Initial page load query params
+    if (typeof window !== 'undefined' && (window.location.search || window.location.pathname.startsWith('/v/') || window.location.pathname.startsWith('/@'))) {
+      handleIncomingUrl(window.location.href);
+    }
+
+    // 2. Native Capacitor App deep link listener (for Android APK & iOS)
+    if (Capacitor.isNativePlatform()) {
+      const appUrlSub = CapacitorApp.addListener('appUrlOpen', (event) => {
+        if (event && event.url) {
+          handleIncomingUrl(event.url);
+        }
+      });
+      return () => {
+        appUrlSub.then((handle) => handle.remove()).catch(() => {});
+      };
+    }
+  }, [videos, setVideos, setFeedFilter, setCurrentVideoIndex, setActiveTab, setDiscoverSearchQuery, openCreatorProfile, currentUser, setShareToast]);
+
   return (
     <DeviceShell>
       {/* Screen Views */}
@@ -265,6 +465,20 @@ const AppContent: React.FC = () => {
       <SkillQuizModal video={selectedSkillQuizVideo} onClose={closeSkillQuizModal} />
       <SettingsPage />
       <AuthModal />
+      <CreatorProfileModal
+        creator={selectedCreatorProfile}
+        isOpen={Boolean(selectedCreatorProfile)}
+        onClose={closeCreatorProfile}
+        onSelectVideo={(video) => {
+          playVideo(video);
+          closeCreatorProfile();
+        }}
+      />
+      <ProductCheckoutModal
+        product={selectedProduct}
+        isOpen={isProductCheckoutOpen}
+        onClose={closeProductCheckout}
+      />
 
       {/* Launch Splash Screen */}
       <SplashScreen />

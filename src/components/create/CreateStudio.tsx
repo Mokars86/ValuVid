@@ -53,8 +53,11 @@ export const CreateStudio: React.FC = () => {
     isProMember, 
     setShowProModal, 
     setShareToast,
-    addFundsToWallet 
+    addFundsToWallet,
+    products
   } = useApp();
+
+  const [selectedProductId, setSelectedProductId] = useState<string>('');
 
   const [step, setStep] = useState<'record' | 'details'>('record');
   const [isRecording, setIsRecording] = useState(false);
@@ -71,8 +74,8 @@ export const CreateStudio: React.FC = () => {
   const [musicVolume] = useState<number>(0);
   const [audioPickerOpen, setAudioPickerOpen] = useState(false);
 
-  // Studio Mode: Photo | 15s HD | 60s Story | Text | LIVE Stream
-  const [studioMode, setStudioMode] = useState<'photo' | '15s' | '60s' | 'text' | 'live'>('15s');
+  // Studio Mode: 15s HD | 60s Story | LIVE Stream
+  const [studioMode, setStudioMode] = useState<'15s' | '60s' | 'live'>('15s');
 
   // Real Upload & File Picker State
   const fileInputRef = useRef<HTMLInputElement | null>(null);
@@ -83,7 +86,7 @@ export const CreateStudio: React.FC = () => {
   const pendingSubstandardFileRef = useRef<File | null>(null);
   const [selectedFileObj, setSelectedFileObj] = useState<File | null>(null);
   const [uploadedMediaUrl, setUploadedMediaUrl] = useState<string | null>(null);
-  const [uploadedMediaType, setUploadedMediaType] = useState<'video' | 'photo' | 'text'>('video');
+  const [uploadedMediaType, setUploadedMediaType] = useState<'video'>('video');
   const [uploadedFileName, setUploadedFileName] = useState<string | null>(null);
   const [isCloudUploading, setIsCloudUploading] = useState(false);
   const [supabaseUploadStatus, setSupabaseUploadStatus] = useState<string | null>(null);
@@ -95,18 +98,6 @@ export const CreateStudio: React.FC = () => {
   const [videoResolution, setVideoResolution] = useState<{ width: number; height: number; qualityLabel: string } | null>(null);
   const [substandardQualityError, setSubstandardQualityError] = useState<{ width: number; height: number; qualityLabel: string } | null>(null);
   const [showQualityWarningModal, setShowQualityWarningModal] = useState(false);
-
-  // Text Mode State & Gradient Presets
-  const textGradients = [
-    { id: 'amber', name: 'Sunset Amber', bg: 'from-amber-600 via-orange-600 to-rose-700' },
-    { id: 'cyan', name: 'Neon Ocean', bg: 'from-cyan-600 via-blue-700 to-indigo-950' },
-    { id: 'emerald', name: 'Emerald Palm', bg: 'from-emerald-600 via-teal-700 to-slate-950' },
-    { id: 'purple', name: 'Royal Purple', bg: 'from-purple-600 via-pink-700 to-indigo-950' },
-    { id: 'gold', name: 'African Gold', bg: 'from-yellow-500 via-amber-600 to-stone-900' }
-  ];
-  const [selectedGradientIdx, setSelectedGradientIdx] = useState(0);
-  const [textContent, setTextContent] = useState('');
-  const [textFontStyle, setTextFontStyle] = useState<'sans' | 'serif' | 'mono' | 'black'>('sans');
 
   const [isLiveBroadcasting, setIsLiveBroadcasting] = useState(false);
   const [liveSeconds, setLiveSeconds] = useState(0);
@@ -199,7 +190,7 @@ export const CreateStudio: React.FC = () => {
   // Form Details
   const [title, setTitle] = useState('');
   const [caption, setCaption] = useState('');
-  const [category, setCategory] = useState<'trending' | 'ghana' | 'tech' | 'fashion' | 'education' | 'bounties'>('ghana');
+  const [hashtags, setHashtags] = useState('#ValuVid #Trending #Ghana');
   const [allowTips, setAllowTips] = useState(true);
   const [isPayPerUnlock, setIsPayPerUnlock] = useState(false);
   const [unlockPriceGHS, setUnlockPriceGHS] = useState(5.00);
@@ -379,7 +370,7 @@ export const CreateStudio: React.FC = () => {
         video.crossOrigin = 'anonymous';
         video.muted = true;
         video.playsInline = true;
-        video.preload = 'auto';
+        video.autoplay = true;
 
         let blobUrl = '';
         if (typeof videoSource === 'string') {
@@ -389,56 +380,133 @@ export const CreateStudio: React.FC = () => {
           video.src = blobUrl;
         }
 
-        const onSeeked = () => {
+        let isResolved = false;
+
+        const captureFrame = () => {
+          if (isResolved) return true;
           try {
-            const canvas = document.createElement('canvas');
-            canvas.width = video.videoWidth || 720;
-            canvas.height = video.videoHeight || 1280;
-            const ctx = canvas.getContext('2d');
-            if (ctx) {
-              ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-              const dataUrl = canvas.toDataURL('image/jpeg', 0.85);
-              cleanup();
-              resolve(dataUrl);
-              return;
+            if (video.videoWidth > 0 && video.videoHeight > 0) {
+              const canvas = document.createElement('canvas');
+              // Scale down to crisp vertical mobile resolution (max 480x854) to keep base64 ultra lightweight (~35KB)
+              const maxW = 480;
+              const maxH = 854;
+              let targetW = video.videoWidth;
+              let targetH = video.videoHeight;
+              if (targetW > maxW || targetH > maxH) {
+                const ratio = Math.min(maxW / targetW, maxH / targetH);
+                targetW = Math.round(targetW * ratio);
+                targetH = Math.round(targetH * ratio);
+              }
+              canvas.width = targetW;
+              canvas.height = targetH;
+              const ctx = canvas.getContext('2d');
+              if (ctx) {
+                ctx.drawImage(video, 0, 0, targetW, targetH);
+                const dataUrl = canvas.toDataURL('image/jpeg', 0.8);
+                isResolved = true;
+                cleanup();
+                resolve(dataUrl);
+                return true;
+              }
             }
           } catch (e) {
             console.warn('Canvas extract frame error:', e);
           }
-          cleanup();
-          resolve('');
+          return false;
+        };
+
+        const onSeeked = () => {
+          if (!captureFrame()) {
+            // Retry frame capture after brief render tick
+            setTimeout(captureFrame, 150);
+          }
         };
 
         const onLoadedData = () => {
-          // Seek to 0.8s or 20% into video for best non-black frame
-          video.currentTime = Math.min(0.8, video.duration ? video.duration / 3 : 0.5);
-        };
-
-        const onError = () => {
-          cleanup();
-          resolve('');
+          try {
+            // Seek to 0.5s or 25% of video to capture a crisp non-black frame
+            video.currentTime = Math.min(0.5, video.duration ? video.duration / 4 : 0.1);
+          } catch {
+            captureFrame();
+          }
         };
 
         const cleanup = () => {
           video.removeEventListener('loadeddata', onLoadedData);
           video.removeEventListener('seeked', onSeeked);
+          video.removeEventListener('canplay', onSeeked);
           video.removeEventListener('error', onError);
+        };
+
+        const onError = () => {
+          if (!isResolved) {
+            isResolved = true;
+            cleanup();
+            resolve('');
+          }
         };
 
         video.addEventListener('loadeddata', onLoadedData);
         video.addEventListener('seeked', onSeeked);
+        video.addEventListener('canplay', onSeeked);
         video.addEventListener('error', onError);
 
         setTimeout(() => {
-          cleanup();
-          resolve('');
-        }, 3500);
+          if (!captureFrame() && !isResolved) {
+            isResolved = true;
+            cleanup();
+            resolve('');
+          }
+        }, 2500);
 
         video.load();
       } catch (err) {
         resolve('');
       }
     });
+  };
+
+  // Helper to generate a sleek clean fallback thumbnail if video frame extraction is unavailable
+  const generateFallbackThumbnail = (videoTitle: string, category: string): string => {
+    try {
+      const canvas = document.createElement('canvas');
+      canvas.width = 480;
+      canvas.height = 854;
+      const ctx = canvas.getContext('2d');
+      if (ctx) {
+        const grad = ctx.createLinearGradient(0, 0, 0, 854);
+        grad.addColorStop(0, '#0F172A');
+        grad.addColorStop(0.5, '#1E293B');
+        grad.addColorStop(1, '#020617');
+        ctx.fillStyle = grad;
+        ctx.fillRect(0, 0, 480, 854);
+
+        ctx.fillStyle = '#F59E0B';
+        ctx.beginPath();
+        ctx.arc(240, 400, 46, 0, Math.PI * 2);
+        ctx.fill();
+
+        ctx.fillStyle = '#000000';
+        ctx.beginPath();
+        ctx.moveTo(232, 382);
+        ctx.lineTo(258, 400);
+        ctx.lineTo(232, 418);
+        ctx.closePath();
+        ctx.fill();
+
+        ctx.fillStyle = '#FFFFFF';
+        ctx.font = 'bold 22px sans-serif';
+        ctx.textAlign = 'center';
+        ctx.fillText(videoTitle.slice(0, 30), 240, 490);
+
+        ctx.fillStyle = '#06B6D4';
+        ctx.font = 'bold 15px sans-serif';
+        ctx.fillText(category.toUpperCase(), 240, 525);
+
+        return canvas.toDataURL('image/jpeg', 0.8);
+      }
+    } catch {}
+    return '';
   };
 
   // Helper to verify that uploaded video meets 720p HD minimum standard (720x1280 or 1280x720)
@@ -460,13 +528,14 @@ export const CreateStudio: React.FC = () => {
           // 720p requirement: min dimension >= 720 (720x1280 vertical or 1280x720) or max dimension >= 1280
           const meetsQuality = (minDim >= 720 || maxDim >= 1280);
 
+          const isLandscape = width > height;
           let label = `${minDim > 0 ? minDim : 480}p SD`;
           if (maxDim >= 3840 || minDim >= 2160) {
-            label = '4K Ultra HD';
+            label = isLandscape ? '4K Landscape' : '4K Ultra HD';
           } else if (maxDim >= 1920 || minDim >= 1080) {
-            label = '1080p Full HD';
+            label = isLandscape ? '1080p Landscape' : '1080p Full HD';
           } else if (meetsQuality) {
-            label = '720p HD';
+            label = isLandscape ? '720p Landscape' : '720p HD';
           }
 
           resolve({ width, height, meetsQuality, label });
@@ -497,43 +566,37 @@ export const CreateStudio: React.FC = () => {
     });
   };
 
-  // Process video or photo file (from gallery or recorded by camera)
+  // Process video file (from gallery or recorded by camera)
   const processVideoOrPhotoFile = async (file: File, forceAcceptQuality = false) => {
     sounds.playLikePop();
-    const isImage = file.type.startsWith('image/');
 
     // Video 720p Minimum Quality Verification
-    if (!isImage) {
-      const qualityCheck = await checkVideoResolution(file);
-      if (!qualityCheck.meetsQuality && !forceAcceptQuality) {
-        // Substandard quality (< 720p): halt and show notification modal with override option
-        pendingSubstandardFileRef.current = file;
-        sounds.playRewardTick();
-        setSubstandardQualityError({
-          width: qualityCheck.width,
-          height: qualityCheck.height,
-          qualityLabel: qualityCheck.label,
-        });
-        setShowQualityWarningModal(true);
-        if (fileInputRef.current) fileInputRef.current.value = '';
-        return;
-      }
-      setVideoResolution({
-        width: qualityCheck.width || 720,
-        height: qualityCheck.height || 1280,
-        qualityLabel: qualityCheck.label || '720p HD',
+    const qualityCheck = await checkVideoResolution(file);
+    if (!qualityCheck.meetsQuality && !forceAcceptQuality) {
+      // Substandard quality (< 720p): halt and show notification modal with override option
+      pendingSubstandardFileRef.current = file;
+      sounds.playRewardTick();
+      setSubstandardQualityError({
+        width: qualityCheck.width,
+        height: qualityCheck.height,
+        qualityLabel: qualityCheck.label,
       });
-      setSubstandardQualityError(null);
-    } else {
-      setVideoResolution(null);
-      setSubstandardQualityError(null);
+      setShowQualityWarningModal(true);
+      if (fileInputRef.current) fileInputRef.current.value = '';
+      return;
     }
+    setVideoResolution({
+      width: qualityCheck.width || 720,
+      height: qualityCheck.height || 1280,
+      qualityLabel: qualityCheck.label || '720p HD',
+    });
+    setSubstandardQualityError(null);
 
     const url = URL.createObjectURL(file);
     setSelectedFileObj(file);
     saveMediaBlob('latest_upload', file);
     setUploadedMediaUrl(url);
-    setUploadedMediaType(isImage ? 'photo' : 'video');
+    setUploadedMediaType('video');
     setUploadedFileName(file.name);
 
     // Auto-fill title from clean filename
@@ -541,22 +604,17 @@ export const CreateStudio: React.FC = () => {
       .replace(/\.[^/.]+$/, '')
       .replace(/[-_]/g, ' ')
       .replace(/\b\w/g, (c) => c.toUpperCase());
-    setTitle(cleanName || (isImage ? 'Photo Drop 📸' : 'ValuVid Studio Creation'));
+    setTitle(cleanName || 'ValuVid Studio Creation');
     setStep('details');
 
-    // If it's a video, automatically extract thumbnail frame as default cover
-    if (!isImage) {
-      setIsExtractingCover(true);
-      extractThumbnailFromVideo(file).then((frame) => {
-        setIsExtractingCover(false);
-        if (frame) {
-          setAutoCoverUrl(frame);
-        }
-      });
-    } else {
-      // Photo is its own cover
-      setAutoCoverUrl(url);
-    }
+    // Automatically extract thumbnail frame as default cover
+    setIsExtractingCover(true);
+    extractThumbnailFromVideo(file).then((frame) => {
+      setIsExtractingCover(false);
+      if (frame) {
+        setAutoCoverUrl(frame);
+      }
+    });
 
     // Asynchronously upload to Supabase Storage Bucket ('ValuVid App' or 'valuvid-app')
     setIsCloudUploading(true);
@@ -575,7 +633,7 @@ export const CreateStudio: React.FC = () => {
     });
   };
 
-  // 1. REAL FILE UPLOAD (Video / Photo from Gallery or Camera with 720p+ Quality Gate)
+  // 1. REAL FILE UPLOAD (Video from Gallery or Camera with 720p+ Quality Gate)
   const handleFileSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -601,137 +659,7 @@ export const CreateStudio: React.FC = () => {
     });
   };
 
-  // 2. SNAP PHOTO FROM CAMERA
-  const handleSnapPhoto = () => {
-    sounds.playLikePop();
-    setFlashOn(true);
-    setTimeout(() => setFlashOn(false), 220);
-
-    let photoUrl = 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=800&auto=format&fit=crop&q=80';
-    let photoBlob: Blob | null = null;
-
-    if (videoElementRef.current && videoElementRef.current.videoWidth) {
-      try {
-        const canvas = document.createElement('canvas');
-        canvas.width = videoElementRef.current.videoWidth || 720;
-        canvas.height = videoElementRef.current.videoHeight || 1280;
-        const ctx = canvas.getContext('2d');
-        if (ctx) {
-          ctx.drawImage(videoElementRef.current, 0, 0, canvas.width, canvas.height);
-          photoUrl = canvas.toDataURL('image/jpeg', 0.9);
-          canvas.toBlob((b) => {
-            photoBlob = b;
-            if (photoBlob) {
-              setSupabaseUploadStatus('Uploading photo to Supabase...');
-              uploadMediaToSupabase(photoBlob, `photo_${Date.now()}.jpg`).then(({ url: remoteUrl, isRemote }) => {
-                if (isRemote) {
-                  setUploadedMediaUrl(remoteUrl);
-                  setSupabaseUploadStatus('Photo saved to Supabase Cloud ☁️');
-                }
-              });
-            }
-          }, 'image/jpeg', 0.9);
-        }
-      } catch (err) {
-        // Fallback
-      }
-    }
-
-    setUploadedMediaUrl(photoUrl);
-    setUploadedMediaType('photo');
-    setUploadedFileName(`photo_${Date.now()}.jpg`);
-    if (!title) setTitle('Studio Photo Snap 📸');
-    setStep('details');
-  };
-
-  // 3. TEXT MODE NEXT STEP
-  const handleNextFromText = () => {
-    if (!textContent.trim()) {
-      alert('Please enter some text for your post!');
-      return;
-    }
-    sounds.playLikePop();
-
-    // Render canvas gradient typography image
-    const canvas = document.createElement('canvas');
-    canvas.width = 720;
-    canvas.height = 1280;
-    const ctx = canvas.getContext('2d');
-    if (ctx) {
-      const grad = ctx.createLinearGradient(0, 0, 0, 1280);
-      if (selectedGradientIdx === 1) {
-        grad.addColorStop(0, '#0284C7');
-        grad.addColorStop(0.5, '#1D4ED8');
-        grad.addColorStop(1, '#0F172A');
-      } else if (selectedGradientIdx === 2) {
-        grad.addColorStop(0, '#059669');
-        grad.addColorStop(0.5, '#0F766E');
-        grad.addColorStop(1, '#022C22');
-      } else if (selectedGradientIdx === 3) {
-        grad.addColorStop(0, '#9333EA');
-        grad.addColorStop(0.5, '#BE185D');
-        grad.addColorStop(1, '#1E1B4B');
-      } else if (selectedGradientIdx === 4) {
-        grad.addColorStop(0, '#EAB308');
-        grad.addColorStop(0.5, '#D97706');
-        grad.addColorStop(1, '#1C1917');
-      } else {
-        grad.addColorStop(0, '#D97706');
-        grad.addColorStop(0.5, '#EA580C');
-        grad.addColorStop(1, '#9F1239');
-      }
-      ctx.fillStyle = grad;
-      ctx.fillRect(0, 0, 720, 1280);
-
-      ctx.fillStyle = '#FFFFFF';
-      ctx.font = textFontStyle === 'serif' ? 'italic bold 42px serif' : textFontStyle === 'mono' ? 'bold 38px monospace' : 'bold 44px sans-serif';
-      ctx.textAlign = 'center';
-      ctx.textBaseline = 'middle';
-
-      const words = textContent.split(' ');
-      let line = '';
-      let y = 580;
-      for (let n = 0; n < words.length; n++) {
-        const testLine = line + words[n] + ' ';
-        const metrics = ctx.measureText(testLine);
-        if (metrics.width > 580 && n > 0) {
-          ctx.fillText(line, 360, y);
-          line = words[n] + ' ';
-          y += 54;
-        } else {
-          line = testLine;
-        }
-      }
-      ctx.fillText(line, 360, y);
-
-      // Footer branding
-      ctx.fillStyle = 'rgba(255,255,255,0.6)';
-      ctx.font = 'bold 24px sans-serif';
-      ctx.fillText(`@${currentUser.username} • ValuVid`, 360, 1180);
-
-      canvas.toBlob((blob) => {
-        if (blob) {
-          setSupabaseUploadStatus('Saving text card to Supabase Cloud...');
-          uploadMediaToSupabase(blob, `story_${Date.now()}.jpg`).then(({ url: remoteUrl, isRemote }) => {
-            if (isRemote) {
-              setUploadedMediaUrl(remoteUrl);
-              setSupabaseUploadStatus('Story card saved to Supabase Cloud ☁️');
-            }
-          });
-        }
-      }, 'image/jpeg', 0.9);
-    }
-
-    const dataUrl = canvas.toDataURL('image/jpeg', 0.9);
-    setUploadedMediaUrl(dataUrl);
-    setUploadedMediaType('text');
-    setUploadedFileName(`text_story_${Date.now()}.jpg`);
-    if (!title) setTitle(textContent.slice(0, 32) + (textContent.length > 32 ? '...' : ''));
-    if (!caption) setCaption(textContent);
-    setStep('details');
-  };
-
-  const handlePublish = (e: React.FormEvent) => {
+  const handlePublish = async (e: React.FormEvent) => {
     e.preventDefault();
 
     if (isCloudUploading) {
@@ -745,16 +673,48 @@ export const CreateStudio: React.FC = () => {
     if (aiTextToVideo) tools.push('Text-to-Video Synthesis');
     if (aiAssistedEditing) tools.push('AI Captions & Noise Filter');
 
-    const finalThumbnail = customCoverUrl || autoCoverUrl || (uploadedMediaType === 'photo' || uploadedMediaType === 'text' ? uploadedMediaUrl : null) || 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=600&auto=format&fit=crop&q=80';
+    // Extract clean hashtags from dedicated input
+    const parsedHashtags = hashtags
+      .split(/[\s,]+/)
+      .map((t) => t.trim().replace(/^#/, ''))
+      .filter((t) => t.length > 0);
+    const finalHashtags = parsedHashtags.length > 0 ? parsedHashtags : ['valuvid', 'creator', 'trending'];
+
+    // Smart Auto-Categorization based on title, caption, hashtags, and performance
+    const lowerText = `${title} ${caption} ${hashtags}`.toLowerCase();
+    let autoCategory: 'trending' | 'ghana' | 'tech' | 'fashion' | 'education' | 'bounties' = 'trending';
+    if (lowerText.includes('ghana') || lowerText.includes('accra') || lowerText.includes('kumasi') || lowerText.includes('africa')) {
+      autoCategory = 'ghana';
+    } else if (lowerText.includes('tech') || lowerText.includes('ai') || lowerText.includes('code') || lowerText.includes('crypto')) {
+      autoCategory = 'tech';
+    } else if (lowerText.includes('fashion') || lowerText.includes('style') || lowerText.includes('beauty') || lowerText.includes('wear')) {
+      autoCategory = 'fashion';
+    } else if (lowerText.includes('learn') || lowerText.includes('tutorial') || lowerText.includes('how to') || lowerText.includes('guide')) {
+      autoCategory = 'education';
+    }
+
+    // Default to the video frame thumbnail by default unless user selected a custom cover
+    let finalThumbnail = customCoverUrl || autoCoverUrl;
+    if (!finalThumbnail && selectedFileObj) {
+      setIsExtractingCover(true);
+      finalThumbnail = await extractThumbnailFromVideo(selectedFileObj);
+      setIsExtractingCover(false);
+    }
+    if (!finalThumbnail && uploadedMediaUrl) {
+      finalThumbnail = await extractThumbnailFromVideo(uploadedMediaUrl);
+    }
+    if (!finalThumbnail) {
+      finalThumbnail = generateFallbackThumbnail(title || 'ValuVid Creation', autoCategory);
+    }
 
     publishNewVideo({
       videoUrl: uploadedMediaUrl || '',
       thumbnailUrl: finalThumbnail,
       fileBlob: selectedFileObj || undefined,
-      title: title || (uploadedMediaType === 'photo' ? 'Photo Drop 📸' : uploadedMediaType === 'text' ? 'Community Update ✍️' : 'ValuVid Studio Creation'),
-      caption: caption || 'Check out my new vertical post on ValuVid! 🇬🇭✨ #valuvid',
-      hashtags: ['valuvid', 'creator', category],
-      category,
+      title: title || 'ValuVid Studio Creation',
+      caption: caption || 'Check out my new vertical creation on ValuVid! 🇬🇭✨',
+      hashtags: finalHashtags,
+      category: autoCategory,
       isPayPerUnlock,
       unlockPriceGHS: isPayPerUnlock ? unlockPriceGHS : undefined,
       audioTrack: {
@@ -793,6 +753,7 @@ export const CreateStudio: React.FC = () => {
         recentContributors: []
       } : undefined,
       videoResolution: videoResolution || { width: 720, height: 1280, qualityLabel: '720p HD' },
+      productTag: products.find((p) => p.id === selectedProductId) || undefined,
     });
   };
 
@@ -802,89 +763,36 @@ export const CreateStudio: React.FC = () => {
     <div className="relative w-full h-full bg-black text-white select-none overflow-hidden flex flex-col justify-between">
       {step === 'record' ? (
         <>
-          {/* CAMERA / TEXT VIEWPORT CANVAS */}
+          {/* CAMERA VIEWPORT CANVAS */}
           <div className="absolute inset-0 z-0 bg-neutral-950 flex items-center justify-center overflow-hidden">
-            {studioMode === 'text' ? (
-              /* FULL-SCREEN TEXT CANVAS */
-              <div className={`absolute inset-0 z-10 bg-gradient-to-b ${textGradients[selectedGradientIdx].bg} flex flex-col justify-center items-center p-6 text-center animate-fade-in`}>
-                <div className="absolute top-16 right-4 flex items-center gap-2 z-20">
-                  <button
-                    type="button"
-                    onClick={() => setSelectedGradientIdx((prev) => (prev + 1) % textGradients.length)}
-                    className="px-2.5 py-1 rounded-full bg-black/45 backdrop-blur-md border border-white/20 text-white hover:bg-black/60 transition-colors flex items-center gap-1.5 text-[11px] font-bold shadow-lg"
-                    title="Change background gradient"
-                  >
-                    <Palette className="w-3.5 h-3.5 text-amber-300" />
-                    <span>{textGradients[selectedGradientIdx].name}</span>
-                  </button>
-                </div>
+            <video
+              ref={videoElementRef}
+              autoPlay
+              playsInline
+              muted
+              className={`w-full h-full object-cover transition-all ${
+                selectedFilter === 'golden'
+                  ? 'sepia-50 contrast-125 brightness-105'
+                  : selectedFilter === 'cyberpunk'
+                  ? 'hue-rotate-90 saturate-150 contrast-125'
+                  : selectedFilter === 'mono'
+                  ? 'grayscale'
+                  : ''
+              }`}
+            />
 
-                <textarea
-                  value={textContent}
-                  onChange={(e) => setTextContent(e.target.value)}
-                  placeholder="Type something inspiring, share a thought, or ask your audience..."
-                  className={`w-full max-w-sm bg-transparent border-none text-white text-center text-2xl sm:text-3xl placeholder-white/40 focus:outline-none resize-none drop-shadow-xl ${
-                    textFontStyle === 'serif' ? 'font-serif italic' : textFontStyle === 'mono' ? 'font-mono' : textFontStyle === 'black' ? 'font-black tracking-tight uppercase' : 'font-sans font-bold'
-                  }`}
-                  rows={5}
-                  maxLength={280}
-                  autoFocus
-                />
-
-                {/* Font selector chips */}
-                <div className="flex items-center gap-1.5 mt-4 bg-black/45 backdrop-blur-md px-3 py-1.5 rounded-full border border-white/20 z-20">
-                  {(['sans', 'serif', 'mono', 'black'] as const).map((style) => (
-                    <button
-                      key={style}
-                      type="button"
-                      onClick={() => setTextFontStyle(style)}
-                      className={`px-2.5 py-0.5 rounded-full text-[10px] font-bold capitalize transition-colors ${
-                        textFontStyle === style
-                          ? 'bg-white text-black'
-                          : 'text-white/70 hover:text-white'
-                      }`}
-                    >
-                      {style}
-                    </button>
-                  ))}
-                </div>
+            {/* Fallback camera simulation graphic */}
+            <div className="absolute inset-0 pointer-events-none flex flex-col items-center justify-center p-6 text-center">
+              <div className="w-20 h-20 rounded-full border-2 border-white/20 border-dashed flex items-center justify-center mb-4">
+                <VideoIcon className="w-8 h-8 text-white/50" />
               </div>
-            ) : (
-              <>
-                <video
-                  ref={videoElementRef}
-                  autoPlay
-                  playsInline
-                  muted
-                  className={`w-full h-full object-cover transition-all ${
-                    selectedFilter === 'golden'
-                      ? 'sepia-50 contrast-125 brightness-105'
-                      : selectedFilter === 'cyberpunk'
-                      ? 'hue-rotate-90 saturate-150 contrast-125'
-                      : selectedFilter === 'mono'
-                      ? 'grayscale'
-                      : ''
-                  }`}
-                />
-
-                {/* Fallback camera simulation graphic */}
-                <div className="absolute inset-0 pointer-events-none flex flex-col items-center justify-center p-6 text-center">
-                  <div className="w-20 h-20 rounded-full border-2 border-white/20 border-dashed flex items-center justify-center mb-4">
-                    {studioMode === 'photo' ? (
-                      <Camera className="w-8 h-8 text-white/50" />
-                    ) : (
-                      <VideoIcon className="w-8 h-8 text-white/50" />
-                    )}
-                  </div>
-                  <p className="text-xs text-white/60 font-medium">
-                    {studioMode === 'photo' ? 'High-Res Photo Canvas Ready' : 'HD 60FPS Camera Canvas Ready'}
-                  </p>
-                  <p className="text-[10px] text-white/40 mt-1">
-                    Webcam or Mobile Sensor View
-                  </p>
-                </div>
-              </>
-            )}
+              <p className="text-xs text-white/60 font-medium">
+                HD 60FPS Camera Canvas Ready
+              </p>
+              <p className="text-[10px] text-white/40 mt-1">
+                Webcam or Mobile Sensor View
+              </p>
+            </div>
 
             {/* Flash simulation */}
             {flashOn && (
@@ -1199,12 +1107,12 @@ export const CreateStudio: React.FC = () => {
               <input
                 ref={fileInputRef}
                 type="file"
-                accept="video/*,image/*"
+                accept="video/*"
                 onChange={handleFileSelect}
                 className="hidden"
               />
 
-              {/* Center Trigger: Photo Shutter / Text Next / Video Record / Go Live */}
+              {/* Center Trigger: Video Record (15s / 60s) or Go Live */}
               {studioMode === 'live' ? (
                 <button
                   onClick={handleStartLive}
@@ -1213,32 +1121,6 @@ export const CreateStudio: React.FC = () => {
                   <Radio className="w-4 h-4 text-rose-600 animate-pulse" />
                   <span>Go LIVE</span>
                 </button>
-              ) : studioMode === 'photo' ? (
-                /* PHOTO SHUTTER BUTTON */
-                <div className="flex flex-col items-center">
-                  <button
-                    type="button"
-                    onClick={handleSnapPhoto}
-                    className="w-16 h-16 rounded-full border-4 border-white p-1 flex items-center justify-center hover:scale-105 active:scale-90 transition-transform shadow-xl shadow-white/20"
-                    title="Take Photo"
-                  >
-                    <div className="w-12 h-12 rounded-full bg-white active:bg-neutral-200 transition-colors" />
-                  </button>
-                  <span className="text-[11px] font-bold text-white mt-1">Snap Photo</span>
-                </div>
-              ) : studioMode === 'text' ? (
-                /* TEXT NEXT/CONTINUE BUTTON */
-                <div className="flex flex-col items-center">
-                  <button
-                    type="button"
-                    onClick={handleNextFromText}
-                    className="px-6 py-3.5 rounded-full bg-white text-black font-black text-xs uppercase tracking-wider shadow-xl shadow-white/20 hover:bg-neutral-100 active:scale-95 transition-transform flex items-center gap-1.5"
-                  >
-                    <span>Continue</span>
-                    <Check className="w-4 h-4 text-black stroke-[3]" />
-                  </button>
-                  <span className="text-[11px] font-bold text-white mt-1">Post Story</span>
-                </div>
               ) : (
                 /* VIDEO RECORD BUTTON (15s / 60s) */
                 <div className="flex flex-col items-center">
@@ -1261,7 +1143,7 @@ export const CreateStudio: React.FC = () => {
                 </div>
               )}
 
-              {/* Right Slot: Next / Topic Flip / Color Flip */}
+              {/* Right Slot: Next / Topic Flip */}
               {studioMode === 'live' ? (
                 <button
                   onClick={() => {
@@ -1281,26 +1163,9 @@ export const CreateStudio: React.FC = () => {
                   </div>
                   <span className="text-[10px] mt-1 font-medium">Topic</span>
                 </button>
-              ) : studioMode === 'text' ? (
-                <button
-                  type="button"
-                  onClick={() => setSelectedGradientIdx((prev) => (prev + 1) % textGradients.length)}
-                  className="flex flex-col items-center text-white/80 hover:text-white"
-                >
-                  <div className="w-10 h-10 rounded-xl bg-black/60 border border-white/20 flex items-center justify-center text-amber-400">
-                    <Palette className="w-5 h-5" />
-                  </div>
-                  <span className="text-[10px] mt-1 font-medium">Color</span>
-                </button>
               ) : (
                 <button
-                  onClick={() => {
-                    if (studioMode === 'photo') {
-                      handleSnapPhoto();
-                    } else {
-                      setStep('details');
-                    }
-                  }}
+                  onClick={() => setStep('details')}
                   className="flex flex-col items-center text-white/80 hover:text-white"
                 >
                   <div className="w-10 h-10 rounded-xl bg-amber-500/20 border border-amber-400/40 flex items-center justify-center">
@@ -1311,52 +1176,34 @@ export const CreateStudio: React.FC = () => {
               )}
             </div>
 
-            {/* STUDIO MODE SWITCHER TABS (Photo | 15s | 60s | Text | 🔴 LIVE) */}
-            <div className="flex items-center justify-center gap-2 min-[360px]:gap-3.5 sm:gap-5 text-[11px] sm:text-xs font-bold pt-2 border-t border-white/10 w-full overflow-x-auto no-scrollbar py-1">
-              <button
-                type="button"
-                onClick={() => setStudioMode('photo')}
-                className={`transition-colors whitespace-nowrap px-1 ${
-                  studioMode === 'photo' ? 'text-amber-400 font-black' : 'text-neutral-400 hover:text-white'
-                }`}
-              >
-                Photo
-              </button>
+            {/* STUDIO MODE SWITCHER TABS (15s | 60s | 🔴 LIVE) */}
+            <div className="flex items-center justify-center gap-4 sm:gap-6 text-xs font-bold pt-2 border-t border-white/10 w-full overflow-x-auto no-scrollbar py-1">
               <button
                 type="button"
                 onClick={() => setStudioMode('15s')}
-                className={`transition-colors whitespace-nowrap px-1 ${
-                  studioMode === '15s' ? 'text-amber-400 font-black' : 'text-neutral-400 hover:text-white'
+                className={`transition-colors whitespace-nowrap px-3 py-1 rounded-full ${
+                  studioMode === '15s' ? 'bg-amber-400 text-neutral-950 font-black shadow-md' : 'text-neutral-400 hover:text-white'
                 }`}
               >
-                15s
+                15s HD
               </button>
               <button
                 type="button"
                 onClick={() => setStudioMode('60s')}
-                className={`transition-colors whitespace-nowrap px-1 ${
-                  studioMode === '60s' ? 'text-amber-400 font-black' : 'text-neutral-400 hover:text-white'
+                className={`transition-colors whitespace-nowrap px-3 py-1 rounded-full ${
+                  studioMode === '60s' ? 'bg-amber-400 text-neutral-950 font-black shadow-md' : 'text-neutral-400 hover:text-white'
                 }`}
               >
-                60s
-              </button>
-              <button
-                type="button"
-                onClick={() => setStudioMode('text')}
-                className={`transition-colors whitespace-nowrap px-1 ${
-                  studioMode === 'text' ? 'text-amber-400 font-black' : 'text-neutral-400 hover:text-white'
-                }`}
-              >
-                Text
+                60s Story
               </button>
               <button
                 type="button"
                 onClick={() => setStudioMode('live')}
-                className={`flex items-center gap-1 transition-colors whitespace-nowrap px-1 ${
-                  studioMode === 'live' ? 'text-rose-400 font-black' : 'text-neutral-400 hover:text-white'
+                className={`flex items-center gap-1.5 transition-colors whitespace-nowrap px-3.5 py-1 rounded-full ${
+                  studioMode === 'live' ? 'bg-rose-500 text-white font-black shadow-md shadow-rose-500/30' : 'text-neutral-400 hover:text-white'
                 }`}
               >
-                <span className="w-2 h-2 rounded-full bg-rose-500 animate-ping" />
+                <span className="w-2 h-2 rounded-full bg-rose-400 animate-ping" />
                 <span>LIVE</span>
               </button>
             </div>
@@ -1382,22 +1229,14 @@ export const CreateStudio: React.FC = () => {
             <div className="flex gap-3 mb-4">
               <div className="w-20 h-28 rounded-xl bg-neutral-900 border border-neutral-800 overflow-hidden relative shrink-0">
                 {uploadedMediaUrl ? (
-                  uploadedMediaType === 'video' ? (
-                    <video
-                      src={uploadedMediaUrl}
-                      className="w-full h-full object-cover"
-                      muted
-                      autoPlay
-                      loop
-                      playsInline
-                    />
-                  ) : (
-                    <img
-                      src={uploadedMediaUrl}
-                      alt="Thumbnail"
-                      className="w-full h-full object-cover"
-                    />
-                  )
+                  <video
+                    src={uploadedMediaUrl}
+                    className="w-full h-full object-cover"
+                    muted
+                    autoPlay
+                    loop
+                    playsInline
+                  />
                 ) : (
                   <img
                     src="https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=300&auto=format&fit=crop&q=80"
@@ -1405,26 +1244,28 @@ export const CreateStudio: React.FC = () => {
                     className="w-full h-full object-cover"
                   />
                 )}
-                <span className="absolute bottom-1 right-1 text-[8px] bg-black/80 px-1 rounded text-white font-mono uppercase">
-                  {uploadedMediaType}
+                <span className="absolute bottom-1 right-1 text-[8px] bg-black/80 px-1 rounded text-cyan-300 font-mono font-bold uppercase">
+                  VIDEO
                 </span>
               </div>
-              <div className="flex-1 flex flex-col gap-2">
-                <input
-                  type="text"
-                  placeholder="Post Title (e.g. Accra Street Secrets)"
-                  value={title}
-                  onChange={(e) => setTitle(e.target.value)}
-                  className="w-full bg-neutral-900 text-xs text-white placeholder-neutral-500 p-2.5 rounded-xl border border-neutral-800 focus:outline-none focus:border-amber-400"
-                />
-                <textarea
-                  placeholder="Write a caption with #hashtags..."
-                  value={caption}
-                  onChange={(e) => setCaption(e.target.value)}
-                  rows={2}
-                  className="w-full bg-neutral-900 text-xs text-white placeholder-neutral-500 p-2.5 rounded-xl border border-neutral-800 focus:outline-none focus:border-amber-400 resize-none"
-                />
-                <div className="flex items-center justify-between text-[10px] text-neutral-400">
+              <div className="flex-1 flex flex-col justify-between gap-2">
+                <div className="flex flex-col gap-1">
+                  <div className="flex items-center justify-between">
+                    <span className="text-[10px] font-black uppercase tracking-wider text-amber-400">
+                      Video Title (Bold)
+                    </span>
+                    <span className="text-[9px] text-neutral-400 font-medium">Main feed headline</span>
+                  </div>
+                  <input
+                    type="text"
+                    placeholder="e.g. Accra Tech Hub Tour 🇬🇭"
+                    value={title}
+                    onChange={(e) => setTitle(e.target.value)}
+                    className="w-full bg-neutral-900 text-sm font-bold text-white placeholder-neutral-500 p-2.5 rounded-xl border border-neutral-700 focus:outline-none focus:border-amber-400 shadow-inner"
+                  />
+                </div>
+
+                <div className="flex items-center justify-between text-[10px] text-neutral-400 pt-1">
                   <button
                     type="button"
                     onClick={() => fileInputRef.current?.click()}
@@ -1434,11 +1275,65 @@ export const CreateStudio: React.FC = () => {
                     <span>{uploadedFileName ? 'Replace Media' : 'Select From Gallery'}</span>
                   </button>
                   {uploadedFileName && (
-                    <span className="truncate max-w-[110px] text-neutral-500">
+                    <span className="truncate max-w-[120px] text-neutral-500 font-mono">
                       {uploadedFileName}
                     </span>
                   )}
                 </div>
+              </div>
+            </div>
+
+            {/* SEPARATE DESCRIPTION / CAPTION */}
+            <div className="mb-3.5 bg-neutral-900/90 border border-neutral-800 rounded-2xl p-3 flex flex-col gap-1.5 shadow-sm">
+              <div className="flex items-center justify-between">
+                <label className="text-xs font-bold text-neutral-200">
+                  Description / Story Caption
+                </label>
+                <span className="text-[10px] text-neutral-500 font-medium">Optional notes</span>
+              </div>
+              <textarea
+                placeholder="Describe your video, story, location, or ask viewers a question..."
+                value={caption}
+                onChange={(e) => setCaption(e.target.value)}
+                rows={2}
+                className="w-full bg-neutral-950 text-xs text-white placeholder-neutral-500 p-2.5 rounded-xl border border-neutral-800 focus:outline-none focus:border-amber-400 resize-none"
+              />
+            </div>
+
+            {/* SEPARATE HASHTAGS SECTION */}
+            <div className="mb-3.5 bg-neutral-900/90 border border-neutral-800 rounded-2xl p-3 flex flex-col gap-2 shadow-sm">
+              <div className="flex items-center justify-between">
+                <label className="text-xs font-bold text-cyan-400">
+                  Hashtags & Search Indexing
+                </label>
+                <span className="text-[10px] text-neutral-400 font-mono">
+                  Space-separated
+                </span>
+              </div>
+              <input
+                type="text"
+                placeholder="#ValuVid #Trending #Ghana #Tech #Viral"
+                value={hashtags}
+                onChange={(e) => setHashtags(e.target.value)}
+                className="w-full bg-neutral-950 text-xs font-mono text-cyan-300 placeholder-neutral-600 p-2.5 rounded-xl border border-neutral-800 focus:outline-none focus:border-cyan-400"
+              />
+              <div className="flex items-center gap-1.5 flex-wrap pt-0.5">
+                <span className="text-[10px] text-neutral-500 font-medium">Quick tags:</span>
+                {['#Trending', '#Ghana', '#Africa', '#Tech', '#Masterclass', '#Viral', '#MoMo'].map((tag) => (
+                  <button
+                    key={tag}
+                    type="button"
+                    onClick={() => {
+                      if (!hashtags.toLowerCase().includes(tag.toLowerCase())) {
+                        setHashtags((prev) => (prev ? `${prev.trim()} ${tag}` : tag));
+                        sounds.playLikePop();
+                      }
+                    }}
+                    className="text-[10px] px-2 py-0.5 rounded-full bg-neutral-800/80 hover:bg-neutral-700 text-cyan-300 font-mono border border-neutral-700/60 transition-colors"
+                  >
+                    +{tag}
+                  </button>
+                ))}
               </div>
             </div>
 
@@ -1454,28 +1349,26 @@ export const CreateStudio: React.FC = () => {
             )}
 
             {/* 720p HD Quality Standard Status Card */}
-            {uploadedMediaType === 'video' && (
-              <div className="mb-3 px-3 py-2 rounded-xl bg-gradient-to-r from-emerald-950/70 via-neutral-900 to-black border border-emerald-500/40 flex items-center justify-between text-xs text-emerald-300 shadow-md">
-                <div className="flex items-center gap-2">
-                  <div className="w-7 h-7 rounded-lg bg-emerald-500/20 border border-emerald-400/40 flex items-center justify-center text-emerald-400">
-                    <ShieldCheck className="w-4 h-4" />
-                  </div>
-                  <div>
-                    <div className="flex items-center gap-1.5">
-                      <span className="font-bold text-white text-xs">
-                        HD Quality Verified: {videoResolution?.qualityLabel || '720p HD'}
-                      </span>
-                      <span className="text-[9px] bg-emerald-500/20 text-emerald-400 font-bold px-1.5 py-0.2 rounded border border-emerald-500/40">
-                        Meets Standard ✓
-                      </span>
-                    </div>
-                    <span className="text-[10px] text-neutral-400">
-                      {videoResolution ? `${videoResolution.width}×${videoResolution.height}px` : '720×1280 vertical HD'} • Optimized for crisp mobile streaming
+            <div className="mb-3 px-3 py-2 rounded-xl bg-gradient-to-r from-emerald-950/70 via-neutral-900 to-black border border-emerald-500/40 flex items-center justify-between text-xs text-emerald-300 shadow-md">
+              <div className="flex items-center gap-2">
+                <div className="w-7 h-7 rounded-lg bg-emerald-500/20 border border-emerald-400/40 flex items-center justify-center text-emerald-400">
+                  <ShieldCheck className="w-4 h-4" />
+                </div>
+                <div>
+                  <div className="flex items-center gap-1.5">
+                    <span className="font-bold text-white text-xs">
+                      HD Quality Verified: {videoResolution?.qualityLabel || '720p HD'}
+                    </span>
+                    <span className="text-[9px] bg-emerald-500/20 text-emerald-400 font-bold px-1.5 py-0.2 rounded border border-emerald-500/40">
+                      Meets Standard ✓
                     </span>
                   </div>
+                  <span className="text-[10px] text-neutral-400">
+                    {videoResolution ? `${videoResolution.width}×${videoResolution.height}px` : '720×1280 vertical HD'} • Optimized for crisp mobile streaming
+                  </span>
                 </div>
               </div>
-            )}
+            </div>
 
             {/* VIDEO COVER / THUMBNAIL SELECTOR */}
             <div className="mb-4 bg-neutral-900/90 border border-neutral-800 rounded-2xl p-3 flex flex-col gap-2.5">
@@ -1562,26 +1455,23 @@ export const CreateStudio: React.FC = () => {
               />
             </div>
 
-            {/* Category selector */}
-            <div className="mb-4">
-              <label className="text-xs font-bold text-neutral-300 block mb-1.5">
-                Channel Category
-              </label>
-              <div className="grid grid-cols-3 gap-2">
-                {(['ghana', 'tech', 'fashion', 'education', 'trending', 'bounties'] as const).map((cat) => (
-                  <button
-                    key={cat}
-                    type="button"
-                    onClick={() => setCategory(cat)}
-                    className={`py-2 px-2 rounded-xl text-xs font-semibold capitalize transition-all ${
-                      category === cat
-                        ? 'bg-amber-500 text-neutral-950 shadow-md shadow-amber-500/20'
-                        : 'bg-neutral-900 text-neutral-400 hover:text-white border border-neutral-800'
-                    }`}
-                  >
-                    {cat}
-                  </button>
-                ))}
+            {/* SMART PERFORMANCE AUTO-CATEGORIZATION (No manual picker needed) */}
+            <div className="mb-4 p-3.5 rounded-2xl bg-gradient-to-r from-amber-500/10 via-neutral-900/90 to-cyan-500/10 border border-amber-500/30 flex items-start gap-3 shadow-lg">
+              <div className="w-8 h-8 rounded-xl bg-gradient-to-tr from-amber-500 to-orange-500 flex items-center justify-center text-black font-black shrink-0 shadow-md shadow-amber-500/20 mt-0.5">
+                <Sparkles className="w-4 h-4 text-black" />
+              </div>
+              <div className="text-left flex-1 min-w-0">
+                <div className="flex items-center gap-1.5 flex-wrap">
+                  <span className="text-xs font-black text-amber-400 uppercase tracking-wide">
+                    Smart Performance Categorization
+                  </span>
+                  <span className="text-[9px] bg-emerald-500/20 text-emerald-400 font-bold px-1.5 py-0.2 rounded border border-emerald-500/30">
+                    Algorithmic
+                  </span>
+                </div>
+                <p className="text-[11px] text-neutral-300 mt-1 leading-relaxed">
+                  Creators no longer need to manually pick categories. ValuVid automatically categorizes your video across Global Trending, Local African Hub, and Niche discovery channels based on viewer engagement, watch retention, tips, and hashtag performance.
+                </p>
               </div>
             </div>
 
@@ -1962,6 +1852,43 @@ export const CreateStudio: React.FC = () => {
                 </div>
               )}
             </div>
+
+            {/* ValuShop: Shoppable Product Pin Attachment */}
+            <div className="bg-neutral-900/60 border border-neutral-800 rounded-2xl p-3.5 flex flex-col gap-2.5">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <div className="w-7 h-7 rounded-lg bg-amber-500/20 border border-amber-500/30 flex items-center justify-center text-amber-400">
+                    🛍️
+                  </div>
+                  <div>
+                    <h4 className="text-xs font-bold text-white">ValuShop Product Tag</h4>
+                    <p className="text-[10px] text-neutral-400">Attach a shoppable product pin to this video</p>
+                  </div>
+                </div>
+              </div>
+
+              <div>
+                <select
+                  value={selectedProductId}
+                  onChange={(e) => setSelectedProductId(e.target.value)}
+                  className="w-full bg-neutral-900 border border-neutral-800 rounded-xl px-2.5 py-2 text-xs text-white focus:outline-none focus:border-amber-400"
+                >
+                  <option value="">No Product Tag (Standard Video)</option>
+                  {products.map((p) => (
+                    <option key={p.id} value={p.id}>
+                      {p.title} (GHS {p.priceGHS.toFixed(2)}) • @{p.creatorUsername}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              {selectedProductId && (
+                <div className="p-2.5 rounded-xl bg-amber-500/10 border border-amber-500/20 text-[11px] text-amber-300 flex items-center gap-2">
+                  <span>🛍️</span>
+                  <span>A floating buy button with escrow checkout will appear on the bottom-left of your video!</span>
+                </div>
+              )}
+            </div>
           </div>
 
           {/* Publish Action Button */}
@@ -2226,7 +2153,7 @@ export const CreateStudio: React.FC = () => {
               <div className="flex items-center justify-between text-xs pt-0.5">
                 <span className="text-neutral-400">Minimum Platform Standard:</span>
                 <span className="font-mono font-bold text-emerald-400 bg-emerald-950/60 px-2 py-0.5 rounded border border-emerald-500/40">
-                  720×1280 (720p HD)
+                  720p HD (720×1280 Vertical or 1280×720 Landscape)
                 </span>
               </div>
             </div>

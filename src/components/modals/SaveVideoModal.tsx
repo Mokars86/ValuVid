@@ -11,6 +11,7 @@ import {
 } from 'lucide-react';
 import { useApp } from '../../context/AppContext';
 import { downloadVideoToDevice } from '../../utils/downloadHelper';
+import { formatCompactNumber } from '../../utils/formatNumber';
 
 export const SaveVideoModal: React.FC = () => {
   const { 
@@ -115,7 +116,7 @@ export const SaveVideoModal: React.FC = () => {
                 HD MP4
               </span>
               <span>•</span>
-              <span>{(saveModalVideo.stats?.views || 0).toLocaleString()} views</span>
+              <span>{formatCompactNumber(saveModalVideo.stats?.views || 0)} views</span>
             </div>
           </div>
         </div>

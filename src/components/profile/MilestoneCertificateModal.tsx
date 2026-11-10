@@ -17,6 +17,7 @@ import {
 } from 'lucide-react';
 import confetti from 'canvas-confetti';
 import { useApp } from '../../context/AppContext';
+import { buildProfileShareUrl } from '../../utils/urlHelper';
 
 export interface MilestoneCertificateData {
   id: string;
@@ -33,7 +34,7 @@ export interface MilestoneCertificateData {
   metricLabel: string;
   metricValue: string;
   plaqueEligible?: boolean;
-  plaqueTier?: 'Rising Star Acrylic' | 'Gold Metallic' | 'Diamond NFC Crystal' | 'Crowned Crystal of the Year';
+  plaqueTier?: string;
   plaqueImage?: string;
   isPlaqueAward?: boolean;
   isUnlocked?: boolean;
@@ -72,7 +73,8 @@ export const MilestoneCertificateModal: React.FC<MilestoneCertificateModalProps>
   const isLight = theme === 'light';
   const isUnlocked = certificate.isUnlocked ?? true;
 
-  const shareText = `🏆 I unlocked the official "${certificate.title}" on ValuVid! Check my creator profile: https://valuvid.app/@${certificate.recipientUsername} #ValuVidCreator #MilestoneAward`;
+  const profileUrl = buildProfileShareUrl(certificate.recipientUsername);
+  const shareText = `🏆 I unlocked the official "${certificate.title}" on ValuVid! Check my creator profile: ${profileUrl} #ValuVidCreator #MilestoneAward`;
 
   const handleCopyLink = () => {
     if (!isUnlocked) {

@@ -21,17 +21,26 @@ import {
   Target,
   GraduationCap,
   Eye,
-  CheckCircle2
+  CheckCircle2,
+  RefreshCw,
+  Play
 } from 'lucide-react';
 import { useApp } from '../../context/AppContext';
 import { VideoPlayer } from './VideoPlayer';
 import { VideoItem } from '../../types';
 import { sounds } from '../../utils/soundEffects';
-import { preloadVideo } from '../../utils/mediaStorage';
+import { preloadVideo, getImmediateVideoUrl } from '../../utils/mediaStorage';
+import { formatCompactNumber } from '../../utils/formatNumber';
+import { INITIAL_COMMUNITY_VIDEOS } from '../../data/communityVideos';
+import { getUserAvatar } from '../../utils/userDirectory';
+import { recordViewerForVideo } from './VideoViewersModal';
+import { getDeletedVideoIds } from '../../services/supabaseClient';
 
 export const FeedScreen: React.FC = () => {
   const { 
     videos, 
+    isVideosLoading,
+    refreshVideosFromSupabase,
     feedFilter, 
     setFeedFilter, 
     toggleLikeVideo, 
@@ -64,23 +73,64 @@ export const FeedScreen: React.FC = () => {
     setAuthMode,
     setShareToast,
     setActiveTab,
-    currentUser
+    setDiscoverSearchQuery,
+    currentUser,
+    openProductCheckout,
+    openCreatorProfile
   } = useApp();
 
-  const [activeIndex, setActiveIndex] = useState(currentVideoIndex || 0);
   const [slideDirection, setSlideDirection] = useState<'up' | 'down' | null>(null);
-
-  // Sync activeIndex whenever parent navigation changes currentVideoIndex or videos list updates
-  useEffect(() => {
-    if (typeof currentVideoIndex === 'number' && currentVideoIndex >= 0) {
-      setActiveIndex(currentVideoIndex);
-      setIsCleanScreen(false);
-    }
-  }, [currentVideoIndex, videos.length]);
-
   const [captionExpanded, setCaptionExpanded] = useState(false);
   const [isCleanScreen, setIsCleanScreen] = useState(false);
   const containerRef = useRef<HTMLDivElement | null>(null);
+
+  // Filter videos according to active tab
+  const filteredVideos = useMemo(() => {
+    const deletedIds = getDeletedVideoIds();
+    const rawList = videos && videos.length > 0 ? videos : INITIAL_COMMUNITY_VIDEOS;
+    let list = rawList.filter(
+      (v) =>
+        !deletedIds.includes(v.id) &&
+        v.caption !== '[DELETED]' &&
+        (v.category as string) !== 'deleted' &&
+        !(v.title || '').includes('[DELETED]')
+    );
+    if (feedFilter === 'following') {
+      const followingVideos = list.filter((v) => v.creator?.isFollowing);
+      // Fallback: If user isn't following anyone yet, gracefully display videos so screen is never empty
+      list = followingVideos.length > 0 ? followingVideos : list;
+    } else if (feedFilter === 'global') {
+      // Sort by highest views across all regions
+      list = [...list].sort((a, b) => b.stats.views - a.stats.views);
+    } else if (feedFilter === 'fresh') {
+      // Highlighting rising Ghanaian creators with under 1,000 followers
+      const freshVideos = list.filter((v) => (v.creator?.followers || 0) < 1000);
+      list = freshVideos.length > 0 ? freshVideos : list;
+    } else if (feedFilter === 'bounties') {
+      const bountyVideos = list.filter((v) => v.category === 'bounties' || Boolean(v.bountyTag));
+      list = bountyVideos.length > 0 ? bountyVideos : list;
+    } else if (feedFilter === 'ghana') {
+      const ghanaVideos = list.filter((v) => v.category === 'ghana');
+      list = ghanaVideos.length > 0 ? ghanaVideos : list;
+    } else if (feedFilter === 'tech') {
+      const techVideos = list.filter((v) => v.category === 'tech' || v.category === 'education');
+      list = techVideos.length > 0 ? techVideos : list;
+    }
+
+    // Pillar 3: Algorithmic Preference ("Human Touch" Authenticity Filter)
+    if (humanTouchRatio >= 95) {
+      const humanList = list.filter((v) => v.aiDisclosureType !== 'generated');
+      return humanList.length > 0 ? humanList : list;
+    }
+
+    return list.length > 0 ? list : INITIAL_COMMUNITY_VIDEOS;
+  }, [videos, feedFilter, humanTouchRatio]);
+
+  // Safe activeIndex derived directly from AppContext currentVideoIndex
+  const activeIndex = useMemo(() => {
+    if (typeof currentVideoIndex !== 'number' || currentVideoIndex < 0) return 0;
+    return currentVideoIndex < filteredVideos.length ? currentVideoIndex : 0;
+  }, [currentVideoIndex, filteredVideos.length]);
 
   // Swipe / Touch / Pointer Tracking Refs
   const touchStartY = useRef<number>(0);
@@ -93,39 +143,12 @@ export const FeedScreen: React.FC = () => {
 
   const lastWheelTime = useRef<number>(0);
 
-  // Filter videos according to active tab
-  const filteredVideos = useMemo(() => {
-    let list = videos;
-    if (feedFilter === 'following') {
-      list = videos.filter((v) => v.creator.isFollowing);
-    } else if (feedFilter === 'global') {
-      // Sort by highest views across all regions
-      list = [...videos].sort((a, b) => b.stats.views - a.stats.views);
-    } else if (feedFilter === 'fresh') {
-      list = videos.filter((v) => (v.creator.followers || 0) < 1500);
-    } else if (feedFilter === 'bounties') {
-      list = videos.filter((v) => v.category === 'bounties' || Boolean(v.bountyTag));
-    } else if (feedFilter === 'ghana') {
-      list = videos.filter((v) => v.category === 'ghana');
-    } else if (feedFilter === 'tech') {
-      list = videos.filter((v) => v.category === 'tech' || v.category === 'education');
-    }
-
-    // Pillar 3: Algorithmic Preference ("Human Touch" Authenticity Filter)
-    if (humanTouchRatio >= 95) {
-      // 100% Real People Only (Filter out pure synthetic AI)
-      return list.filter((v) => v.aiDisclosureType !== 'generated');
-    }
-
-    return list;
-  }, [videos, feedFilter, humanTouchRatio]);
-
-  // Clamp active index if list length changes
+  // Clamp currentVideoIndex if list length changes
   useEffect(() => {
-    if (activeIndex >= filteredVideos.length) {
-      setActiveIndex(Math.max(0, filteredVideos.length - 1));
+    if (filteredVideos.length > 0 && currentVideoIndex >= filteredVideos.length) {
+      setCurrentVideoIndex(Math.max(0, filteredVideos.length - 1));
     }
-  }, [filteredVideos.length, activeIndex]);
+  }, [filteredVideos.length, currentVideoIndex, setCurrentVideoIndex]);
 
   // TikTok Architecture: Predictive Next/Previous Video Preloading into IndexedDB buffer
   useEffect(() => {
@@ -140,7 +163,7 @@ export const FeedScreen: React.FC = () => {
     }
   }, [activeIndex, filteredVideos]);
 
-  const currentVideo: VideoItem | undefined = filteredVideos[activeIndex] || filteredVideos[0];
+  const currentVideo: VideoItem | undefined = filteredVideos[activeIndex] || filteredVideos[0] || INITIAL_COMMUNITY_VIDEOS[0];
 
   const isCurrentRewarded = Boolean(currentVideo && isVideoRewarded(currentVideo.id));
   const [currentVideoProgress, setCurrentVideoProgress] = useState(0);
@@ -163,6 +186,11 @@ export const FeedScreen: React.FC = () => {
     if (currentVideo.isPayPerUnlock && !currentVideo.isUnlocked) return;
     if (isVideoRewarded(currentVideo.id)) return; // Already claimed: loop/repeat will NEVER reward again
 
+    // Record viewer identity for "Who watched my video" viewers sheet
+    if (currentVideo && currentUser?.username) {
+      recordViewerForVideo(currentVideo.id, currentUser);
+    }
+
     const interval = setInterval(() => {
       setCurrentVideoProgress((prev) => {
         if (prev >= 100) {
@@ -178,43 +206,39 @@ export const FeedScreen: React.FC = () => {
   }, [currentVideo?.id, currentVideo?.isPayPerUnlock, currentVideo?.isUnlocked, currentVideo?.title, currentVideo?.creator?.username, isVideoRewarded, claimWatchReward]);
 
   const handleNextVideo = useCallback(() => {
-    if (activeIndex < filteredVideos.length - 1) {
-      setSlideDirection('up');
-      setActiveIndex((prev) => {
-        const next = prev + 1;
-        setCurrentVideoIndex(next);
-        return next;
-      });
-      setCaptionExpanded(false);
-    }
-  }, [activeIndex, filteredVideos.length, setCurrentVideoIndex]);
+    if (filteredVideos.length <= 1) return;
+    setSlideDirection('up');
+    setCurrentVideoIndex((prev) => (prev + 1) % filteredVideos.length);
+    setCaptionExpanded(false);
+    setIsCleanScreen(false);
+  }, [filteredVideos.length, setCurrentVideoIndex]);
 
   const handlePrevVideo = useCallback(() => {
-    if (activeIndex > 0) {
-      setSlideDirection('down');
-      setActiveIndex((prev) => {
-        const next = prev - 1;
-        setCurrentVideoIndex(next);
-        return next;
-      });
-      setCaptionExpanded(false);
-    }
-  }, [activeIndex, setCurrentVideoIndex]);
+    if (filteredVideos.length <= 1) return;
+    setSlideDirection('down');
+    setCurrentVideoIndex((prev) => (prev === 0 ? filteredVideos.length - 1 : prev - 1));
+    setCaptionExpanded(false);
+    setIsCleanScreen(false);
+  }, [filteredVideos.length, setCurrentVideoIndex]);
 
   // Touch swipe events for mobile devices
   const handleTouchStart = (e: React.TouchEvent<HTMLDivElement>) => {
+    if ((e.target as HTMLElement).closest('button, a, input, select, textarea')) {
+      return;
+    }
     touchStartY.current = e.touches[0].clientY;
     touchStartX.current = e.touches[0].clientX;
     touchStartTime.current = Date.now();
   };
 
   const handleTouchEnd = (e: React.TouchEvent<HTMLDivElement>) => {
+    if (!touchStartTime.current) return;
     const deltaY = touchStartY.current - e.changedTouches[0].clientY;
     const deltaX = touchStartX.current - e.changedTouches[0].clientX;
-    const elapsed = Date.now() - touchStartTime.current;
+    touchStartTime.current = 0;
 
-    // Minimum swipe threshold: 38px, vertical dominance, under 900ms
-    if (Math.abs(deltaY) > 38 && Math.abs(deltaY) > Math.abs(deltaX) * 1.15 && elapsed < 900) {
+    // Minimum swipe threshold: 28px, vertical dominance
+    if (Math.abs(deltaY) > 28 && Math.abs(deltaY) > Math.abs(deltaX)) {
       if (deltaY > 0) {
         // Swiped UP -> Next video
         handleNextVideo();
@@ -225,9 +249,14 @@ export const FeedScreen: React.FC = () => {
     }
   };
 
-  // Pointer drag events for desktop web users (click & drag up/down)
+  const handleTouchCancel = () => {
+    touchStartTime.current = 0;
+  };
+
+  // Pointer drag events for desktop web users (click & drag up/down with mouse)
   const handlePointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
-    // Ignore if clicking interactive controls (buttons, links, inputs)
+    // Only handle mouse events here to prevent conflicting with touch swipe on mobile devices
+    if (e.pointerType !== 'mouse') return;
     if ((e.target as HTMLElement).closest('button, a, input, select, textarea')) {
       return;
     }
@@ -242,7 +271,7 @@ export const FeedScreen: React.FC = () => {
     const deltaY = pointerStartY.current - e.clientY;
     const deltaX = pointerStartX.current - e.clientX;
 
-    if (Math.abs(deltaY) > 40 && Math.abs(deltaY) > Math.abs(deltaX) * 1.15) {
+    if (Math.abs(deltaY) > 28 && Math.abs(deltaY) > Math.abs(deltaX)) {
       if (deltaY > 0) {
         handleNextVideo();
       } else {
@@ -295,12 +324,6 @@ export const FeedScreen: React.FC = () => {
 
   const handleLike = () => {
     if (!currentVideo) return;
-    const isOwner = (currentUser?.id && currentVideo.creator?.id && currentUser.id === currentVideo.creator.id) ||
-                    (currentUser?.username && currentVideo.creator?.username && currentUser.username.toLowerCase() === currentVideo.creator.username.toLowerCase());
-    if (isOwner) {
-      setShareToast("Creators cannot like their own videos 🚫");
-      return;
-    }
     toggleLikeVideo(currentVideo.id);
   };
 
@@ -316,9 +339,7 @@ export const FeedScreen: React.FC = () => {
   const handleFollow = (e: React.MouseEvent) => {
     e.stopPropagation();
     if (!currentVideo) return;
-    toggleFollowCreator(currentVideo.creator.id);
-    const willFollow = !currentVideo.creator.isFollowing;
-    setShareToast(willFollow ? `Now following @${currentVideo.creator.username}! 🎉` : `Unfollowed @${currentVideo.creator.username}`);
+    toggleFollowCreator(currentVideo.creator.id || currentVideo.creator.username);
   };
 
   const handleTip = () => {
@@ -339,27 +360,88 @@ export const FeedScreen: React.FC = () => {
     openUnlockPrompt(currentVideo);
   };
 
+  // 1. Sleek TikTok/Reels Style Loading Screen (avoids flashing "No user videos" during network fetch)
+  if (isVideosLoading && (!currentVideo || filteredVideos.length === 0)) {
+    return (
+      <div className="relative w-full h-full bg-[#050811] flex flex-col items-center justify-center overflow-hidden select-none">
+        {/* Ambient Glow */}
+        <div className="absolute w-80 h-80 rounded-full bg-gradient-to-tr from-amber-500/10 via-cyan-500/10 to-transparent blur-3xl pointer-events-none" />
+
+        {/* Center Animated Logo & Status */}
+        <div className="relative z-10 flex flex-col items-center px-6 text-center animate-fade-in">
+          <div className="relative mb-5 flex items-center justify-center">
+            {/* Smooth Spinning Ring */}
+            <div className="absolute w-20 h-20 rounded-full border-2 border-transparent border-t-amber-500 border-r-amber-400 animate-spin" />
+            <div className="w-16 h-16 rounded-2xl bg-gradient-to-tr from-[#FF9F0A] to-amber-600 flex items-center justify-center shadow-2xl shadow-amber-500/30">
+              <Sparkles className="w-8 h-8 text-neutral-950 animate-pulse" />
+            </div>
+          </div>
+
+          <h3 className="text-base font-black tracking-tight text-white flex items-center gap-1.5">
+            ValuVid Stream Engine
+          </h3>
+          <p className="text-xs text-neutral-400 mt-1 animate-pulse">
+            Loading creators and video feed...
+          </p>
+
+          <div className="mt-4 flex items-center gap-2 px-3 py-1 rounded-full bg-neutral-900/80 border border-neutral-800">
+            <span className="w-2 h-2 rounded-full bg-amber-400 animate-ping" />
+            <span className="text-[10px] font-mono uppercase tracking-widest text-amber-400 font-bold">
+              Connecting HD Feed
+            </span>
+          </div>
+        </div>
+
+        {/* Shimmering Vertical Video Overlay Skeletons */}
+        <div className="absolute right-3.5 bottom-24 flex flex-col items-center gap-4 z-10 opacity-25 pointer-events-none">
+          <div className="w-10 h-10 rounded-full bg-neutral-800 animate-pulse" />
+          <div className="w-10 h-10 rounded-full bg-neutral-800 animate-pulse" />
+          <div className="w-10 h-10 rounded-full bg-neutral-800 animate-pulse" />
+          <div className="w-10 h-10 rounded-full bg-neutral-800 animate-pulse" />
+        </div>
+
+        <div className="absolute left-4 bottom-16 w-3/5 flex flex-col gap-2 z-10 opacity-25 pointer-events-none">
+          <div className="w-28 h-4 bg-neutral-800 rounded-md animate-pulse" />
+          <div className="w-48 h-3.5 bg-neutral-800 rounded-md animate-pulse" />
+          <div className="w-32 h-3 bg-neutral-800 rounded-md animate-pulse" />
+        </div>
+      </div>
+    );
+  }
+
+  // 2. Empty Feed Screen (only shown AFTER loading completes and no videos exist in current filter)
   if (!currentVideo) {
     return (
-      <div className="w-full h-full flex flex-col items-center justify-center p-8 text-center bg-neutral-950 text-white">
-        <Sparkles className="w-12 h-12 text-amber-400 mb-3 animate-bounce" />
-        <h3 className="text-lg font-bold">No user videos in this feed</h3>
-        <p className="text-sm text-neutral-400 mt-1 mb-5 max-w-xs">
-          Template videos have been removed. Upload or record your own videos to appear here!
+      <div className="w-full h-full flex flex-col items-center justify-center p-8 text-center bg-neutral-950 text-white select-none">
+        <div className="w-16 h-16 rounded-2xl bg-amber-500/15 border border-amber-500/30 flex items-center justify-center mb-4 text-amber-400">
+          <Sparkles className="w-8 h-8 animate-bounce" />
+        </div>
+        <h3 className="text-lg font-bold">No videos in this feed yet</h3>
+        <p className="text-xs text-neutral-400 mt-1 mb-6 max-w-xs leading-relaxed">
+          Be the first creator to record or upload a video here and earn viewer tips and watch rewards!
         </p>
-        <div className="flex flex-col gap-2 w-full max-w-xs">
+        <div className="flex flex-col gap-2.5 w-full max-w-xs">
           <button
             onClick={() => setActiveTab('create')}
-            className="w-full py-3 bg-white hover:bg-neutral-100 text-black font-bold rounded-xl text-sm shadow-xl shadow-white/10 active:scale-95 transition-all"
+            className="w-full py-3 bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-400 hover:to-amber-500 text-black font-black rounded-xl text-sm shadow-xl shadow-amber-500/20 active:scale-95 transition-all"
           >
             Upload Video in Studio 🚀
           </button>
+          
+          <button
+            onClick={() => refreshVideosFromSupabase()}
+            className="w-full py-2.5 bg-neutral-900 hover:bg-neutral-800 border border-neutral-800 text-neutral-300 font-bold rounded-xl text-xs flex items-center justify-center gap-1.5 transition-colors active:scale-95"
+          >
+            <RefreshCw className="w-3.5 h-3.5 text-cyan-400" />
+            <span>Check for New Videos</span>
+          </button>
+
           {feedFilter !== 'foryou' && (
             <button
               onClick={() => setFeedFilter('foryou')}
-              className="w-full py-2 bg-neutral-800 hover:bg-neutral-700 text-neutral-300 font-medium rounded-xl text-xs transition-colors"
+              className="w-full py-2 text-neutral-400 hover:text-white font-medium text-xs transition-colors"
             >
-              View For You Feed
+              Switch to For You Feed
             </button>
           )}
         </div>
@@ -374,6 +456,7 @@ export const FeedScreen: React.FC = () => {
       ref={containerRef} 
       onTouchStart={handleTouchStart}
       onTouchEnd={handleTouchEnd}
+      onTouchCancel={handleTouchCancel}
       onPointerDown={handlePointerDown}
       onPointerUp={handlePointerUp}
       onPointerCancel={handlePointerCancel}
@@ -383,7 +466,8 @@ export const FeedScreen: React.FC = () => {
           setIsCleanScreen(false);
         }
       }}
-      className="relative w-full h-full bg-black select-none overflow-hidden flex flex-col justify-between"
+      style={{ touchAction: 'none' }}
+      className="relative w-full h-full bg-black select-none overflow-hidden flex flex-col justify-between touch-none"
     >
       {/* 9:16 Video Player Container with vertical slide transition */}
       <div 
@@ -447,14 +531,14 @@ export const FeedScreen: React.FC = () => {
         </div>
       )}
 
-      {/* TOP HEADER BAR (Clean, Centered, No Horizontal Scroll) */}
-      <header className={`relative z-20 w-full pt-8 sm:pt-5 pb-2 px-4 transition-all duration-300 flex items-center justify-center ${
+      {/* TOP HEADER BAR (Clean, Centered, Following | For You | Fresh Creators) */}
+      <header className={`relative z-20 w-full pt-8 sm:pt-5 pb-2 px-3 sm:px-4 transition-all duration-300 flex items-center justify-center ${
         isCleanScreen ? 'opacity-0 -translate-y-6 pointer-events-none' : 'opacity-100 translate-y-0'
       }`}>
-        <div className="flex items-center justify-center gap-6">
+        <div className="flex items-center justify-center gap-3 sm:gap-5">
           <button
             onClick={() => setFeedFilter('following')}
-            className={`text-sm font-bold transition-all ${
+            className={`text-xs sm:text-sm font-bold transition-all ${
               feedFilter === 'following'
                 ? 'text-white border-b-2 border-white pb-0.5 scale-105'
                 : 'text-white/60 hover:text-white pb-0.5'
@@ -465,13 +549,25 @@ export const FeedScreen: React.FC = () => {
           <span className="text-white/30 text-xs">|</span>
           <button
             onClick={() => setFeedFilter('foryou')}
-            className={`text-sm font-bold transition-all ${
-              feedFilter === 'foryou' || !['following', 'foryou'].includes(feedFilter)
+            className={`text-xs sm:text-sm font-bold transition-all ${
+              feedFilter === 'foryou' || !['following', 'foryou', 'fresh'].includes(feedFilter)
                 ? 'text-white border-b-2 border-white pb-0.5 scale-105'
                 : 'text-white/60 hover:text-white pb-0.5'
             }`}
           >
             For You
+          </button>
+          <span className="text-white/30 text-xs">|</span>
+          <button
+            onClick={() => setFeedFilter('fresh')}
+            className={`text-xs sm:text-sm font-bold transition-all ${
+              feedFilter === 'fresh'
+                ? 'text-white border-b-2 border-white pb-0.5 scale-105'
+                : 'text-white/60 hover:text-white pb-0.5'
+            }`}
+            title="Highlighting creators under 1,000 followers"
+          >
+            Fresh Creators
           </button>
         </div>
       </header>
@@ -480,58 +576,56 @@ export const FeedScreen: React.FC = () => {
       <aside className={`absolute right-2.5 min-[380px]:right-3 bottom-14 min-[380px]:bottom-20 z-20 flex flex-col items-center gap-2 min-[380px]:gap-3.5 transition-all duration-300 ${
         isCleanScreen ? 'opacity-0 translate-x-6 pointer-events-none' : 'opacity-100 translate-x-0'
       }`}>
-        {/* Creator Avatar & Follow Button */}
+        {/* Creator Avatar & TikTok-Style Follow Button */}
         <div className="relative group mb-0.5">
           <div 
-            onClick={() => setActiveTab('profile')}
+            onClick={() => {
+              if (currentVideo.creator.username === currentUser.username) {
+                setActiveTab('profile');
+              } else {
+                openCreatorProfile(currentVideo.creator);
+              }
+            }}
             className="w-10 h-10 min-[380px]:w-12 min-[380px]:h-12 rounded-full p-[2px] bg-gradient-to-tr from-amber-400 to-rose-500 shadow-md cursor-pointer active:scale-95 transition-transform"
             title={`View @${currentVideo.creator.username}'s Profile`}
           >
             <img
-              src={currentVideo.creator.avatar || '/default-avatar.jpg'}
+              src={getUserAvatar(currentVideo.creator.avatar, currentVideo.creator.name || currentVideo.creator.username)}
               alt={currentVideo.creator.name || 'Creator'}
               onError={(e) => {
-                (e.currentTarget as HTMLImageElement).src = '/default-avatar.jpg';
+                (e.currentTarget as HTMLImageElement).src = '/default-avatar.svg';
               }}
               className="w-full h-full rounded-full object-cover"
             />
           </div>
-          {currentVideo.creator.username !== currentUser.username && (
+
+          {/* TikTok-Style Follow Button: Red circular '+' pill that disappears upon following */}
+          {currentVideo.creator.username !== currentUser.username && !currentVideo.creator.isFollowing && (
             <button
               onClick={handleFollow}
               aria-label="Follow creator"
-              className={`absolute -bottom-1.5 left-1/2 -translate-x-1/2 w-4 h-4 min-[380px]:w-5 min-[380px]:h-5 rounded-full flex items-center justify-center shadow-md transition-all active:scale-90 ${
-                currentVideo.creator.isFollowing
-                  ? 'bg-emerald-500 text-neutral-950 hover:bg-emerald-400 scale-105'
-                  : 'bg-rose-500 text-white hover:bg-rose-600'
-              }`}
+              className="absolute -bottom-1.5 left-1/2 -translate-x-1/2 w-4 h-4 min-[380px]:w-5 min-[380px]:h-5 rounded-full flex items-center justify-center shadow-lg bg-rose-500 hover:bg-rose-600 text-white transition-all active:scale-90 cursor-pointer animate-in zoom-in-50"
+              title={`Follow @${currentVideo.creator.username}`}
             >
-              {currentVideo.creator.isFollowing ? (
-                <Check className="w-2.5 h-2.5 min-[380px]:w-3 min-[380px]:h-3 stroke-[3]" />
-              ) : (
-                <Plus className="w-2.5 h-2.5 min-[380px]:w-3 min-[380px]:h-3 stroke-[3]" />
-              )}
+              <Plus className="w-2.5 h-2.5 min-[380px]:w-3 min-[380px]:h-3 stroke-[3]" />
             </button>
           )}
         </div>
 
-        {/* VALU-TIP BUTTON (Highlighted with Logo Colors & Live Tip Counter) */}
+        {/* VALU-TIP BUTTON (Compact, Non-Glowing, Play-Style Icon) */}
         <button
           onClick={handleTip}
           className="flex flex-col items-center group relative focus:outline-none"
           aria-label="Tip creator"
         >
-          <div className="w-10 h-10 min-[380px]:w-12 min-[380px]:h-12 rounded-2xl bg-gradient-to-tr from-[#00B2FE] via-[#0284C7] to-[#FF9F0A] p-[2px] shadow-lg shadow-[#00B2FE]/30 animate-pulse-glow group-hover:scale-105 active:scale-95 transition-transform">
-            <div className="w-full h-full bg-[#060D19] rounded-[14px] flex items-center justify-center">
-              <Coins className="w-5 h-5 min-[380px]:w-6 min-[380px]:h-6 text-[#FF9F0A] group-hover:rotate-12 transition-transform" />
-            </div>
+          <div className="w-9 h-9 min-[380px]:w-10 min-[380px]:h-10 rounded-full bg-black/50 backdrop-blur-md flex items-center justify-center border border-amber-400/40 group-hover:border-amber-400 group-hover:bg-black/70 active:scale-95 transition-all shadow-sm">
+            <Play className="w-4 h-4 min-[380px]:w-5 min-[380px]:h-5 text-amber-400 fill-amber-400 ml-0.5 group-hover:scale-110 transition-transform" />
           </div>
-          <div className="mt-0.5 min-[380px]:mt-1 bg-[#060D19]/90 border border-[#00B2FE]/50 backdrop-blur-md px-1.5 py-0.2 min-[380px]:py-0.5 rounded-full shadow-sm">
-            <span className="text-[9px] min-[380px]:text-[10px] font-bold text-cyan-300">
+          <div className="mt-1 bg-black/70 border border-neutral-700/80 backdrop-blur-md px-1.5 py-0.5 rounded-full shadow-sm">
+            <span className="text-[9px] min-[380px]:text-[10px] font-bold text-amber-300">
               GHS {(currentVideo.stats.tipsTotalGHS || 0).toFixed(1)}
             </span>
           </div>
-          <span className="text-[8px] min-[380px]:text-[9px] font-semibold text-neutral-300 mt-0.5">Valu-Tip</span>
         </button>
 
         {/* Like Button */}
@@ -550,7 +644,7 @@ export const FeedScreen: React.FC = () => {
             />
           </div>
           <span className="text-[10px] min-[380px]:text-[11px] font-medium text-white drop-shadow-md mt-0.5 min-[380px]:mt-1">
-            {(currentVideo.stats.likes || 0).toLocaleString()}
+            {formatCompactNumber(currentVideo.stats?.likes || 0)}
           </span>
         </button>
 
@@ -564,32 +658,29 @@ export const FeedScreen: React.FC = () => {
             <MessageCircle className="w-4 h-4 min-[380px]:w-5 min-[380px]:h-5 text-white group-hover:scale-110 transition-transform" />
           </div>
           <span className="text-[10px] min-[380px]:text-[11px] font-medium text-white drop-shadow-md mt-0.5 min-[380px]:mt-1">
-            {(currentVideo.stats.comments || 0).toLocaleString()}
+            {formatCompactNumber(currentVideo.stats?.comments || 0)}
           </span>
         </button>
 
-        {/* Share & Reward Button with Persistent Live Count */}
+        {/* Share Button with Compact Count */}
         <button
           onClick={() => shareVideoWithRewardLink(currentVideo)}
           className="flex flex-col items-center group relative active:scale-95 transition-transform"
-          aria-label="Share and earn curator reward"
+          aria-label="Share video"
         >
           <div className="w-9 h-9 min-[380px]:w-10 min-[380px]:h-10 rounded-full bg-black/40 backdrop-blur-md flex items-center justify-center border border-white/10 group-hover:bg-black/60 transition-colors">
             <Share2 className="w-4 h-4 min-[380px]:w-5 min-[380px]:h-5 text-cyan-400 group-hover:scale-110 transition-transform" />
           </div>
           <span className="text-[10px] min-[380px]:text-[11px] font-medium text-white drop-shadow-md mt-0.5 min-[380px]:mt-1">
-            {(currentVideo.stats.shares || 0).toLocaleString()}
-          </span>
-          <span className="text-[7px] min-[380px]:text-[8px] font-bold text-cyan-300 bg-cyan-950/80 px-1 py-0.2 rounded-full border border-cyan-500/40 leading-none mt-0.5">
-            +5%
+            {formatCompactNumber(currentVideo.stats?.shares || 0)}
           </span>
         </button>
 
-        {/* Save Video Action (Bookmarks & Device Download) */}
+        {/* Save Video Action (Bookmarks) */}
         <button
           onClick={handleSave}
           className="flex flex-col items-center group active:scale-95 transition-transform"
-          aria-label="Save or download video"
+          aria-label="Save video"
         >
           <div className={`w-9 h-9 min-[380px]:w-10 min-[380px]:h-10 rounded-full bg-black/40 backdrop-blur-md flex items-center justify-center border transition-all ${
             isSaved(currentVideo.id)
@@ -601,10 +692,7 @@ export const FeedScreen: React.FC = () => {
             }`} />
           </div>
           <span className="text-[10px] min-[380px]:text-[11px] font-medium text-white drop-shadow-md mt-0.5 min-[380px]:mt-1">
-            {(currentVideo.stats?.saves ?? (isSaved(currentVideo.id) ? 1 : 0)).toLocaleString()}
-          </span>
-          <span className="text-[7px] min-[380px]:text-[8px] font-semibold text-neutral-400 leading-none mt-0.5">
-            {isSaved(currentVideo.id) ? 'Saved' : 'Save'}
+            {formatCompactNumber(currentVideo.stats?.saves ?? (isSaved(currentVideo.id) ? 1 : 0))}
           </span>
         </button>
       </aside>
@@ -613,50 +701,77 @@ export const FeedScreen: React.FC = () => {
       <footer className={`relative z-20 w-full px-3 min-[380px]:px-4 pb-2.5 min-[380px]:pb-3 flex flex-col gap-1.5 min-[380px]:gap-2 transition-all duration-300 ${
         isCleanScreen ? 'opacity-0 translate-y-6 pointer-events-none' : 'opacity-100 translate-y-0'
       }`}>
-        {/* Sleek Live Watch Progress Pill (Rewards strictly ONCE per unique video) */}
+        {/* Sleek Mini Watch Progress Pill (Ultra-compact, 70% less space) */}
         <div 
           onClick={() => setShowFundingModal(true)}
-          className={`self-start flex items-center gap-2 backdrop-blur-md rounded-full px-3 py-1.5 cursor-pointer shadow-lg shadow-black/50 transition-all active:scale-95 group ${
+          className={`self-start flex items-center gap-1.5 backdrop-blur-md rounded-full px-2.5 py-1 cursor-pointer shadow-md transition-all active:scale-95 group ${
             isCurrentRewarded 
-              ? 'bg-emerald-950/70 border border-emerald-500/50 hover:border-emerald-400' 
-              : 'bg-black/60 border border-amber-400/35 hover:border-amber-400/70'
+              ? 'bg-emerald-950/70 border border-emerald-500/40 text-emerald-400' 
+              : 'bg-black/50 border border-amber-400/40 text-amber-300'
           }`}
-          title={isCurrentRewarded ? 'Reward Claimed for this video • Scroll to earn on next video' : 'Watch-to-Earn: Genuine attention reward funded by Brand Escrow'}
+          title={isCurrentRewarded ? 'Reward Claimed • Scroll for next video' : 'Watch-to-Earn: Genuine attention reward funded by Brand Escrow'}
         >
           {isCurrentRewarded ? (
-            <div className="flex items-center gap-1.5 text-emerald-400">
-              <CheckCircle2 className="w-3.5 h-3.5 shrink-0 text-emerald-400" />
-              <span className="text-[10px] font-bold text-emerald-300">Reward Claimed (+0.02)</span>
-              <span className="text-[9px] text-neutral-400 font-medium pl-1 border-l border-white/10 hidden sm:inline">
-                Scroll for next
-              </span>
+            <div className="flex items-center gap-1">
+              <CheckCircle2 className="w-3 h-3 text-emerald-400" />
+              <span className="text-[9px] font-bold text-emerald-300">+0.02 Claimed</span>
             </div>
           ) : (
-            <>
+            <div className="flex items-center gap-1.5">
               <div className="relative flex items-center">
-                <Coins className="w-3.5 h-3.5 text-amber-400 shrink-0 group-hover:rotate-12 transition-transform" />
-                <span className="absolute -top-0.5 -right-0.5 w-1.5 h-1.5 rounded-full bg-emerald-400 animate-ping" />
+                <Coins className="w-3 h-3 text-amber-400 shrink-0" />
+                <span className="absolute -top-0.5 -right-0.5 w-1 h-1 rounded-full bg-emerald-400 animate-ping" />
               </div>
-              <div className="w-16 min-[360px]:w-20 h-1.5 bg-white/20 rounded-full overflow-hidden p-[0.5px]">
+              <div className="w-10 h-1 bg-white/20 rounded-full overflow-hidden">
                 <div
-                  className="h-full bg-gradient-to-r from-amber-400 via-yellow-300 to-emerald-400 rounded-full transition-all duration-300 shadow-[0_0_8px_rgba(251,191,36,0.8)]"
+                  className="h-full bg-gradient-to-r from-amber-400 to-emerald-400 rounded-full transition-all duration-300 shadow-[0_0_6px_rgba(251,191,36,0.8)]"
                   style={{ width: `${Math.min(100, Math.max(0, currentVideoProgress))}%` }}
                 />
               </div>
-              <span className="text-[10px] font-mono font-bold text-amber-300">
+              <span className="text-[9px] font-mono font-bold text-amber-300">
                 {currentVideoProgress}%
               </span>
-              <span className="text-[9px] font-bold text-emerald-400 bg-emerald-950/70 border border-emerald-500/40 px-1 py-0.2 rounded-full leading-none">
-                +0.02
-              </span>
-            </>
+            </div>
           )}
         </div>
+
+        {/* ValuShop: Interactive Shoppable Video Product Pin (only for authentic creator products, never mock text) */}
+        {currentVideo.productTag &&
+          currentVideo.productTag.id !== 'prod-kwesi-drumkit' &&
+          !currentVideo.productTag.title?.toLowerCase().includes('drum kit') &&
+          !currentVideo.productTag.title?.toLowerCase().includes('afro beats') && (
+          <button
+            onClick={() => openProductCheckout(currentVideo.productTag!)}
+            className="self-start flex items-center gap-2 bg-neutral-900/90 hover:bg-neutral-850 border border-amber-400/60 backdrop-blur-md px-3 py-1.5 rounded-full text-white shadow-xl shadow-black/60 active:scale-95 transition-all mb-1 group"
+          >
+            <span className="text-sm group-hover:scale-125 transition-transform">🛍️</span>
+            <div className="flex flex-col text-left">
+              <span className="text-[11px] font-bold text-amber-300 line-clamp-1 max-w-[190px]">
+                {currentVideo.productTag.title}
+              </span>
+              <span className="text-[10px] font-mono font-bold text-white">
+                GHS {currentVideo.productTag.priceGHS.toFixed(2)}
+              </span>
+            </div>
+            <span className="ml-1 text-[9px] font-black bg-gradient-to-r from-amber-400 to-amber-500 text-neutral-950 px-2 py-0.5 rounded-full uppercase tracking-wider shadow-sm">
+              Buy
+            </span>
+          </button>
+        )}
 
         {/* Creator Info & Caption */}
         <div className="pr-14 min-[380px]:pr-16 max-w-sm">
           <div className="flex items-center gap-1.5 flex-wrap mb-1">
-            <span className="text-sm font-bold text-white drop-shadow-md">
+            <span 
+              onClick={() => {
+                if (currentVideo.creator.username === currentUser.username) {
+                  setActiveTab('profile');
+                } else {
+                  openCreatorProfile(currentVideo.creator);
+                }
+              }}
+              className="text-sm font-bold text-white drop-shadow-md cursor-pointer hover:underline active:scale-95 transition-transform"
+            >
               @{currentVideo.creator.username}
             </span>
             {currentVideo.creator.verified && (
@@ -664,11 +779,6 @@ export const FeedScreen: React.FC = () => {
                 ✓
               </span>
             )}
-
-            {/* HD Resolution Quality Badge */}
-            <span className="text-[9px] bg-black/60 border border-white/20 text-neutral-300 font-bold px-1.5 py-0.2 rounded backdrop-blur-md">
-              {currentVideo.videoResolution?.qualityLabel || '720p HD'}
-            </span>
 
             {/* Modern AI Badge with Sparkle / Intelligence Indicator */}
             {currentVideo.isAiContent && currentVideo.aiDisclosureType === 'generated' ? (
@@ -716,26 +826,61 @@ export const FeedScreen: React.FC = () => {
             </button>
           )}
 
-          {/* Expandable Caption with Hashtags */}
-          <div className="text-xs text-neutral-200 leading-relaxed drop-shadow-md">
-            <p className={captionExpanded ? '' : 'line-clamp-2'}>
-              {currentVideo.caption}
-            </p>
-            {currentVideo.caption.length > 70 && (
-              <button
-                onClick={() => setCaptionExpanded(!captionExpanded)}
-                className="text-[11px] font-bold text-amber-300 mt-0.5 hover:underline"
-              >
-                {captionExpanded ? 'Show less' : '...more'}
-              </button>
+          {/* 1-Line Clean Video Caption with ...more */}
+          <div className="flex flex-col drop-shadow-md">
+            {currentVideo.title && currentVideo.title.toLowerCase() !== (currentVideo.caption || '').toLowerCase() && (
+              <h2 className={`font-bold text-white text-xs sm:text-sm tracking-tight leading-snug drop-shadow-md ${
+                captionExpanded ? '' : 'line-clamp-1'
+              }`}>
+                {currentVideo.title}
+              </h2>
+            )}
+
+            {currentVideo.caption && (
+              <div className="text-xs text-neutral-200 leading-relaxed">
+                <p className={captionExpanded ? '' : 'line-clamp-1'}>
+                  {currentVideo.caption}
+                </p>
+                {((currentVideo.caption && currentVideo.caption.length > 50) || (currentVideo.hashtags && currentVideo.hashtags.length > 0)) && (
+                  <button
+                    onClick={() => setCaptionExpanded(!captionExpanded)}
+                    className="text-[11px] font-bold text-amber-300 hover:text-amber-200 hover:underline mt-0.5 inline-block"
+                  >
+                    {captionExpanded ? 'Show less' : '...more'}
+                  </button>
+                )}
+              </div>
+            )}
+
+            {/* Video Hashtags (revealed only upon clicking ...more to keep screen 100% clean) */}
+            {captionExpanded && currentVideo.hashtags && currentVideo.hashtags.length > 0 && (
+              <div className="flex flex-wrap items-center gap-1.5 mt-1.5 animate-fade-in">
+                {currentVideo.hashtags.map((tag, idx) => {
+                  const rawTag = (tag || '').trim();
+                  if (!rawTag) return null;
+                  const displayTag = rawTag.startsWith('#') ? rawTag : `#${rawTag}`;
+                  return (
+                    <span
+                      key={idx}
+                      onClick={() => {
+                        setDiscoverSearchQuery(displayTag);
+                        setActiveTab('discover');
+                      }}
+                      className="text-[11px] font-bold text-amber-300 hover:text-amber-200 cursor-pointer active:scale-95 transition-transform"
+                    >
+                      {displayTag}
+                    </span>
+                  );
+                })}
+              </div>
             )}
           </div>
 
           {/* Sound / Music Track Link with rotating vinyl */}
-          <div className="flex items-center gap-2 mt-2">
-            <Music className="w-3.5 h-3.5 text-neutral-300 animate-spin" style={{ animationDuration: '6s' }} />
-            <span className="text-[11px] text-neutral-300 truncate font-medium">
-              {currentVideo.audioTrack.title} • {currentVideo.audioTrack.artist}
+          <div className="flex items-center gap-2 mt-1.5">
+            <Music className="w-3 h-3 text-neutral-400 animate-spin" style={{ animationDuration: '6s' }} />
+            <span className="text-[10px] text-neutral-300 truncate font-medium max-w-[200px]">
+              {currentVideo.audioTrack?.title || 'Original Sound'} • {currentVideo.audioTrack?.artist || currentVideo.creator?.name || 'Creator'}
             </span>
           </div>
         </div>

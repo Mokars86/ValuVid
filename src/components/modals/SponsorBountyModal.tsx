@@ -9,7 +9,8 @@ import {
   CheckCircle2, 
   ShieldCheck,
   Zap,
-  Lock
+  Lock,
+  Clock
 } from 'lucide-react';
 import { useApp } from '../../context/AppContext';
 import { launchPaystackPayment, saveEscrowDeposit, getPlatformCommissionPercent } from '../../services/paystackService';
@@ -19,13 +20,19 @@ export const SponsorBountyModal: React.FC = () => {
 
   const [title, setTitle] = useState('');
   const [sponsorName, setSponsorName] = useState('');
-  const [rewardPoolGHS, setRewardPoolGHS] = useState(1000);
+  const [rewardPoolGHS, setRewardPoolGHS] = useState(100);
+  const [durationDays, setDurationDays] = useState(7);
+  const [customDuration, setCustomDuration] = useState('');
   const [category, setCategory] = useState('Tech & Reviews');
   const [isProcessing, setIsProcessing] = useState(false);
 
   if (!showSponsorModal) return null;
 
   const isLight = theme === 'light';
+
+  const effectiveDuration = customDuration && Number(customDuration) > 0 
+    ? Math.min(90, Math.max(1, Math.round(Number(customDuration)))) 
+    : durationDays;
 
   const commissionRate = getPlatformCommissionPercent() / 100;
   const platformFee = Number((rewardPoolGHS * commissionRate).toFixed(2));
@@ -35,6 +42,10 @@ export const SponsorBountyModal: React.FC = () => {
     e.preventDefault();
     if (!title.trim() || !sponsorName.trim()) {
       alert('Please fill out the challenge title and brand name.');
+      return;
+    }
+    if (rewardPoolGHS < 100) {
+      alert('Minimum reward pool size is GHS 100.00 so creators can earn meaningful rewards.');
       return;
     }
 
@@ -49,6 +60,7 @@ export const SponsorBountyModal: React.FC = () => {
         sponsorName,
         rewardPoolGHS,
         developerCommissionGHS: platformFee,
+        durationDays: effectiveDuration,
       },
       onSuccess: (res) => {
         setIsProcessing(false);
@@ -65,12 +77,13 @@ export const SponsorBountyModal: React.FC = () => {
           developerCommissionGHS: platformFee,
           totalFundedGHS: totalUpfront,
           paystackReference: res.reference,
+          durationDays: effectiveDuration,
           status: 'ESCROW_LOCKED',
           createdAt: new Date().toISOString(),
         });
 
         // 2. Publish bounty challenge into ValuVid feed
-        sponsorBounty(title, sponsorName, rewardPoolGHS, category, res.reference);
+        sponsorBounty(title, sponsorName, rewardPoolGHS, category, res.reference, effectiveDuration);
 
         confetti({
           particleCount: 120,
@@ -160,18 +173,23 @@ export const SponsorBountyModal: React.FC = () => {
         </div>
 
         <div>
-          <label className={`text-[11px] font-bold uppercase tracking-wider block mb-1.5 ${isLight ? 'text-slate-700' : 'text-neutral-300'}`}>
-            Reward Pool Size (Cedis)
-          </label>
-          <div className="grid grid-cols-3 gap-2 mb-2">
-            {[500, 1000, 2500].map((amt) => (
+          <div className="flex items-center justify-between mb-1.5">
+            <label className={`text-[11px] font-bold uppercase tracking-wider block ${isLight ? 'text-slate-700' : 'text-neutral-300'}`}>
+              Reward Pool Size (Cedis)
+            </label>
+            <span className={`text-[10px] font-bold ${isLight ? 'text-emerald-700' : 'text-emerald-400'}`}>
+              Min: GHS 100
+            </span>
+          </div>
+          <div className="grid grid-cols-4 gap-1.5 mb-2">
+            {[100, 250, 500, 1000].map((amt) => (
               <button
                 key={amt}
                 type="button"
                 onClick={() => setRewardPoolGHS(amt)}
                 className={`py-2 rounded-xl text-xs font-bold transition-all ${
                   rewardPoolGHS === amt
-                    ? (isLight ? 'bg-amber-500 text-slate-950 font-black' : 'bg-[#FF9F0A] text-[#070E1B]')
+                    ? (isLight ? 'bg-amber-500 text-slate-950 font-black shadow-sm' : 'bg-[#FF9F0A] text-[#070E1B]')
                     : (isLight ? 'bg-slate-100 text-slate-700 border border-slate-200 hover:bg-slate-200' : 'bg-[#0A1628] text-neutral-300 border border-neutral-800')
                 }`}
               >
@@ -179,6 +197,94 @@ export const SponsorBountyModal: React.FC = () => {
               </button>
             ))}
           </div>
+
+          <div className="relative">
+            <span className={`absolute left-3 top-2.5 text-xs font-bold ${isLight ? 'text-slate-400' : 'text-neutral-500'}`}>
+              GHS
+            </span>
+            <input
+              type="number"
+              min="100"
+              step="10"
+              placeholder="Or enter custom amount (min 100)"
+              value={rewardPoolGHS || ''}
+              onChange={(e) => setRewardPoolGHS(Math.max(0, Number(e.target.value)))}
+              className={`w-full rounded-xl pl-12 pr-3 py-2 text-xs font-bold focus:outline-none ${
+                isLight
+                  ? 'bg-slate-50 border border-slate-200 text-slate-900 placeholder-slate-400 focus:border-amber-500'
+                  : 'bg-[#0A1628] border border-neutral-800 text-white placeholder-neutral-500 focus:border-[#00B2FE]'
+              }`}
+            />
+          </div>
+        </div>
+
+        {/* Challenge Duration */}
+        <div>
+          <div className="flex items-center justify-between mb-1.5">
+            <div className="flex items-center gap-1.5">
+              <Clock className="w-3.5 h-3.5 text-amber-500" />
+              <label className={`text-[11px] font-bold uppercase tracking-wider block ${isLight ? 'text-slate-700' : 'text-neutral-300'}`}>
+                Challenge Duration
+              </label>
+            </div>
+            <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${
+              isLight ? 'bg-amber-100 text-amber-900 border border-amber-200' : 'bg-amber-500/10 text-amber-400 border border-amber-500/30'
+            }`}>
+              {effectiveDuration} {effectiveDuration === 1 ? 'Day' : 'Days'} Active
+            </span>
+          </div>
+
+          {/* Quick preset chips */}
+          <div className="grid grid-cols-4 gap-1.5 mb-2">
+            {[3, 7, 14, 30].map((days) => (
+              <button
+                key={days}
+                type="button"
+                onClick={() => {
+                  setDurationDays(days);
+                  setCustomDuration('');
+                }}
+                className={`py-2 rounded-xl text-xs font-bold transition-all ${
+                  durationDays === days && !customDuration
+                    ? (isLight ? 'bg-amber-500 text-slate-950 font-black shadow-sm' : 'bg-[#FF9F0A] text-[#070E1B]')
+                    : (isLight ? 'bg-slate-100 text-slate-700 border border-slate-200 hover:bg-slate-200' : 'bg-[#0A1628] text-neutral-300 border border-neutral-800 hover:border-neutral-700')
+                }`}
+              >
+                {days} Days
+              </button>
+            ))}
+          </div>
+
+          {/* Custom days input */}
+          <div className="relative">
+            <span className={`absolute left-3 top-2.5 text-xs font-bold ${isLight ? 'text-slate-400' : 'text-neutral-500'}`}>
+              Days
+            </span>
+            <input
+              type="number"
+              min="1"
+              max="90"
+              placeholder="Or enter custom days (e.g. 5, 21)"
+              value={customDuration}
+              onChange={(e) => {
+                const val = e.target.value;
+                setCustomDuration(val);
+                if (val && Number(val) > 0) {
+                  setDurationDays(Math.min(90, Math.max(1, Math.round(Number(val)))));
+                } else if (!val) {
+                  setDurationDays(7);
+                }
+              }}
+              className={`w-full rounded-xl pl-14 pr-3 py-2 text-xs font-bold focus:outline-none ${
+                isLight
+                  ? 'bg-slate-50 border border-slate-200 text-slate-900 placeholder-slate-400 focus:border-amber-500'
+                  : 'bg-[#0A1628] border border-neutral-800 text-white placeholder-neutral-500 focus:border-[#00B2FE]'
+              }`}
+            />
+          </div>
+          <p className={`text-[10px] mt-1 ${isLight ? 'text-slate-500' : 'text-neutral-400'}`}>
+            Creators have this duration to submit video entries before winners are selected and escrow is paid out.
+          </p>
         </div>
 
         {/* Upfront Escrow Breakdown */}

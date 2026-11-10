@@ -14,6 +14,7 @@ export interface Creator {
   name: string;
   username: string;
   email?: string;
+  phone?: string;
   avatar: string;
   bio: string;
   followers: number;
@@ -117,6 +118,37 @@ export interface VideoItem {
   valuSplit?: ValuSplitConfig;
   communityGoal?: CommunityGoal;
   skillQuiz?: SkillQuiz;
+  productTag?: ProductItem;
+}
+
+export interface ProductItem {
+  id: string;
+  creatorUsername: string;
+  creatorName: string;
+  title: string;
+  description: string;
+  priceGHS: number;
+  imageUrl: string;
+  type: 'physical' | 'digital';
+  inStock: boolean;
+  category: string;
+  deliveryInfo?: string;
+  downloadUrl?: string;
+  salesCount?: number;
+}
+
+export interface ShopOrder {
+  id: string;
+  productId: string;
+  productTitle: string;
+  sellerUsername: string;
+  buyerUsername: string;
+  amountGHS: number;
+  platformFeeGHS: number;
+  status: 'escrow_locked' | 'delivered' | 'refunded';
+  createdAt: string;
+  deliveryAddress?: string;
+  contactPhone: string;
 }
 
 export interface CommentItem {
@@ -155,12 +187,12 @@ export interface BountyChallenge {
 
 export interface TransactionItem {
   id: string;
-  type: 'tip_received' | 'tip_sent' | 'watch_reward' | 'cashout' | 'content_unlock' | 'topup' | 'bounty_reward';
+  type: 'tip_received' | 'tip_sent' | 'watch_reward' | 'cashout' | 'content_unlock' | 'topup' | 'bounty_reward' | 'product_sale' | 'product_purchase';
   title: string;
   subtitle: string;
   amountGHS: number;
   timestamp: string;
-  status: 'completed' | 'processing' | 'failed';
+  status: 'completed' | 'processing' | 'pending' | 'failed';
   method?: 'MTN MoMo' | 'Telecel Cash' | 'Bank Transfer' | 'Stripe' | 'In-App Wallet' | string;
   referenceId: string;
 }

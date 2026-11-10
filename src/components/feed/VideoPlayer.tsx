@@ -1,9 +1,10 @@
 import React, { useRef, useState, useEffect, useCallback } from 'react';
-import { Play, Volume2, VolumeX, Heart, Sparkles } from 'lucide-react';
+import { Play, Pause, Volume2, VolumeX, Heart, Sparkles, Maximize2, Minimize2, X, RotateCw } from 'lucide-react';
 import { VideoItem } from '../../types';
 import { sounds } from '../../utils/soundEffects';
-import { resolveLiveVideoUrl } from '../../utils/mediaStorage';
+import { resolveLiveVideoUrl, getImmediateVideoUrl } from '../../utils/mediaStorage';
 import { useApp } from '../../context/AppContext';
+import { App as CapApp } from '@capacitor/app';
 
 interface VideoPlayerProps {
   video: VideoItem;
@@ -28,18 +29,58 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
   const [showHeartAnim, setShowHeartAnim] = useState(false);
   const [heartPos, setHeartPos] = useState({ x: 50, y: 50 });
   const [lastTapTime, setLastTapTime] = useState(0);
-  const [activeSrc, setActiveSrc] = useState<string>(video.videoUrl || '');
+  const [activeSrc, setActiveSrc] = useState<string>(() => getImmediateVideoUrl(video.id, video.videoUrl, video.title));
+  const [isVideoReady, setIsVideoReady] = useState(false);
   const pointerDownCoords = useRef<{ x: number; y: number } | null>(null);
 
-  // Resolve video source (from IndexedDB local storage or public stream)
+  // Landscape Detection & Cinema Theater Mode
+  const [isLandscape, setIsLandscape] = useState<boolean>(() => {
+    if (video.videoResolution) {
+      return video.videoResolution.width > video.videoResolution.height;
+    }
+    return false;
+  });
+  const [isTheaterFullscreen, setIsTheaterFullscreen] = useState(false);
+  const [playbackProgress, setPlaybackProgress] = useState(0);
+
+  // Native phone back button listener to exit Theater Mode immediately
   useEffect(() => {
+    if (!isTheaterFullscreen) return;
+    let listenerHandle: any = null;
+    try {
+      CapApp.addListener('backButton', () => {
+        setIsTheaterFullscreen(false);
+      }).then((handle) => {
+        listenerHandle = handle;
+      });
+    } catch {}
+
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setIsTheaterFullscreen(false);
+    };
+    window.addEventListener('keydown', handleKeyDown);
+
+    return () => {
+      if (listenerHandle && typeof listenerHandle.remove === 'function') {
+        listenerHandle.remove();
+      }
+      window.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [isTheaterFullscreen]);
+
+  // Instant hardware playback: set source synchronously, then check local blob cache in background
+  useEffect(() => {
+    const immediate = getImmediateVideoUrl(video.id, video.videoUrl, video.title);
+    setActiveSrc(immediate);
+    setHasError(false);
+
     let isMounted = true;
-    resolveLiveVideoUrl(video.id, video.videoUrl || '').then((resolved) => {
+    resolveLiveVideoUrl(video.id, video.videoUrl, video.title).then((resolved) => {
       if (isMounted) {
-        if (resolved) {
+        if (resolved && resolved !== immediate) {
           setActiveSrc(resolved);
           setHasError(false);
-        } else {
+        } else if (!immediate && !resolved) {
           setActiveSrc('');
           setHasError(!video.thumbnailUrl);
         }
@@ -63,9 +104,19 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
           playPromise
             .then(() => {
               setIsPlaying(true);
+              setIsVideoReady(true);
             })
             .catch((err) => {
               console.debug('[VideoPlayer] Play interrupted or waiting for load:', err);
+              // Autoplay recovery: if browser policy blocks unmuted autoplay without gesture, retry muted immediately
+              if (err?.name === 'NotAllowedError') {
+                vid.muted = true;
+                setIsFeedMuted(true);
+                vid.play().then(() => {
+                  setIsPlaying(true);
+                  setIsVideoReady(true);
+                }).catch(() => {});
+              }
             });
         }
       }
@@ -84,6 +135,15 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
       }
       setIsPlaying(false);
     }
+
+    return () => {
+      if (vid) {
+        vid.pause();
+      }
+      if (bgAudio) {
+        bgAudio.pause();
+      }
+    };
   }, [isActive, activeSrc, video.audioTrack?.audioUrl, video.musicVolume, isFeedMuted]);
 
   // Handle video playback failure
@@ -192,8 +252,29 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
     <div
       onPointerDown={handlePointerDown}
       onClick={handleContainerClick}
-      className="relative w-full h-full bg-black overflow-hidden flex items-center justify-center cursor-pointer select-none"
+      style={{ touchAction: 'none' }}
+      className="relative w-full h-full bg-black overflow-hidden flex items-center justify-center cursor-pointer select-none touch-none"
     >
+      {/* 0ms Instant Poster Layer: Prevents black-screen flash while video decoder warms up */}
+      {video.thumbnailUrl && (
+        <img
+          src={video.thumbnailUrl}
+          alt={video.title}
+          className={`absolute inset-0 w-full h-full ${isLandscape ? 'object-contain' : 'object-cover'} transition-opacity duration-300 pointer-events-none select-none z-1 ${
+            isVideoReady ? 'opacity-0' : 'opacity-100'
+          }`}
+          loading="eager"
+        />
+      )}
+
+      {/* Ambient Glow Backdrop for Horizontal Landscape Videos */}
+      {isLandscape && video.thumbnailUrl && (
+        <div 
+          className="absolute inset-0 bg-cover bg-center filter blur-2xl opacity-40 scale-125 pointer-events-none select-none"
+          style={{ backgroundImage: `url(${video.thumbnailUrl})` }}
+        />
+      )}
+
       {/* Video element or fallback visual */}
       {!hasError && activeSrc ? (
         <video
@@ -202,15 +283,67 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
           poster={video.thumbnailUrl}
           loop
           playsInline
+          preload="auto"
           autoPlay
           muted={isFeedMuted}
-          onPlay={() => setIsPlaying(true)}
-          onPlaying={() => setIsPlaying(true)}
+          onLoadedMetadata={() => {
+            setIsVideoReady(true);
+            if (videoRef.current) {
+              const w = videoRef.current.videoWidth;
+              const h = videoRef.current.videoHeight;
+              if (w && h && w > h * 1.05) {
+                setIsLandscape(true);
+              }
+            }
+            if (isActive && videoRef.current && videoRef.current.paused) {
+              videoRef.current.play().catch((err) => {
+                if (err?.name === 'NotAllowedError' && videoRef.current) {
+                  videoRef.current.muted = true;
+                  setIsFeedMuted(true);
+                  videoRef.current.play().catch(() => {});
+                }
+              });
+            }
+          }}
+          onTimeUpdate={() => {
+            if (videoRef.current && isTheaterFullscreen) {
+              const cur = videoRef.current.currentTime;
+              const dur = videoRef.current.duration || 1;
+              setPlaybackProgress((cur / dur) * 100);
+            }
+          }}
+          onLoadedData={() => {
+            setIsVideoReady(true);
+            if (isActive && videoRef.current && videoRef.current.paused) {
+              videoRef.current.play().catch((err) => {
+                if (err?.name === 'NotAllowedError' && videoRef.current) {
+                  videoRef.current.muted = true;
+                  setIsFeedMuted(true);
+                  videoRef.current.play().catch(() => {});
+                }
+              });
+            }
+          }}
+          onPlay={() => {
+            setIsPlaying(true);
+            setIsVideoReady(true);
+          }}
+          onPlaying={() => {
+            setIsPlaying(true);
+            setIsVideoReady(true);
+          }}
           onPause={() => setIsPlaying(false)}
           onCanPlay={() => {
+            setIsVideoReady(true);
             if (isActive && videoRef.current && videoRef.current.paused && isPlaying) {
               videoRef.current.muted = isFeedMuted;
-              videoRef.current.play().catch(() => {});
+              videoRef.current.play().catch((err) => {
+                if (err?.name === 'NotAllowedError' && videoRef.current) {
+                  videoRef.current.muted = true;
+                  setIsFeedMuted(true);
+                  videoRef.current.play().catch(() => {});
+                }
+              });
             }
           }}
           onEnded={() => {
@@ -220,9 +353,16 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
             }
           }}
           onError={handleVideoError}
-          className="w-full h-full object-cover pointer-events-none"
+          className={`w-full h-full ${isLandscape ? 'object-contain' : 'object-cover'} pointer-events-none transition-all duration-300 z-2`}
         />
       ) : null}
+
+      {/* Sleek buffering indicator over poster layer while warming up */}
+      {!isVideoReady && !hasError && activeSrc && (
+        <div className="absolute inset-0 flex items-center justify-center pointer-events-none z-10">
+          <div className="w-10 h-10 rounded-full border-2 border-white/20 border-t-amber-400 animate-spin" />
+        </div>
+      )}
 
       {/* Synchronized Background Music Audio Element (for videos or photo drops) */}
       {video.audioTrack?.audioUrl && (
@@ -283,6 +423,132 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
       >
         {isFeedMuted ? <VolumeX className="w-4 h-4 text-rose-400" /> : <Volume2 className="w-4 h-4 text-white" />}
       </button>
+
+      {/* Horizontal Landscape Cinema Mode Button */}
+      {isLandscape && !isTheaterFullscreen && !isCleanScreen && (
+        <button
+          type="button"
+          onClick={(e) => {
+            e.stopPropagation();
+            setIsTheaterFullscreen(true);
+            sounds.playLikePop();
+          }}
+          className="absolute top-28 right-4 z-20 flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-black/60 hover:bg-black/80 backdrop-blur-md border border-white/25 text-white shadow-xl active:scale-95 transition-all text-xs font-bold"
+          title="Watch in Fullscreen Landscape"
+        >
+          <Maximize2 className="w-3.5 h-3.5 text-amber-400" />
+          <span>Rotate View</span>
+        </button>
+      )}
+
+      {/* Fullscreen Landscape Theater Mode Modal Overlay */}
+      {isTheaterFullscreen && (
+        <div 
+          onClick={(e) => e.stopPropagation()}
+          className="fixed inset-0 z-50 bg-black flex flex-col justify-between p-4 sm:p-6 animate-fade-in select-none"
+        >
+          {/* Top Bar with Title, Handle & Exit Button */}
+          <div className="flex items-center justify-between z-20">
+            <div className="flex items-center gap-2.5 min-w-0">
+              <button
+                type="button"
+                onClick={() => setIsTheaterFullscreen(false)}
+                className="w-9 h-9 rounded-full bg-neutral-900/90 hover:bg-neutral-800 text-white flex items-center justify-center border border-white/20 active:scale-95 transition-transform shrink-0"
+              >
+                <X className="w-5 h-5" />
+              </button>
+              <div className="min-w-0">
+                <h3 className="text-sm font-bold text-white truncate">{video.title}</h3>
+                <p className="text-[11px] text-amber-400 font-mono">@{video.creator.username} • 16:9 Cinema</p>
+              </div>
+            </div>
+            <div className="flex items-center gap-2 shrink-0">
+              <button
+                type="button"
+                onClick={toggleMute}
+                className="w-9 h-9 rounded-full bg-neutral-900/90 text-white flex items-center justify-center border border-white/20 active:scale-95 transition-transform"
+              >
+                {isFeedMuted ? <VolumeX className="w-4 h-4 text-rose-400" /> : <Volume2 className="w-4 h-4 text-white" />}
+              </button>
+              <button
+                type="button"
+                onClick={() => setIsTheaterFullscreen(false)}
+                className="px-3 py-1.5 rounded-xl bg-neutral-900/90 hover:bg-neutral-800 text-xs font-bold text-white border border-white/20 flex items-center gap-1.5 active:scale-95 transition-transform"
+              >
+                <Minimize2 className="w-3.5 h-3.5 text-amber-400" />
+                <span>Exit</span>
+              </button>
+            </div>
+          </div>
+
+          {/* Interactive Tap Zone to Play / Pause in Fullscreen */}
+          <div 
+            onClick={() => {
+              const vid = videoRef.current;
+              if (vid) {
+                if (vid.paused) {
+                  vid.play().catch(() => {});
+                  setIsPlaying(true);
+                } else {
+                  vid.pause();
+                  setIsPlaying(false);
+                }
+              }
+            }}
+            className="flex-1 w-full flex items-center justify-center cursor-pointer my-2"
+          >
+            {!isPlaying && (
+              <div className="w-16 h-16 rounded-full bg-white/20 backdrop-blur-md flex items-center justify-center border border-white/40 shadow-xl pointer-events-none">
+                <Play className="w-8 h-8 text-white ml-1 fill-white" />
+              </div>
+            )}
+          </div>
+
+          {/* Bottom Control Bar */}
+          <div className="flex flex-col gap-2 z-20 bg-neutral-950/85 backdrop-blur-md p-3 sm:p-4 rounded-2xl border border-neutral-800">
+            <div 
+              onClick={(e) => {
+                const rect = e.currentTarget.getBoundingClientRect();
+                const clickX = e.clientX - rect.left;
+                const ratio = Math.max(0, Math.min(1, clickX / rect.width));
+                if (videoRef.current && videoRef.current.duration) {
+                  videoRef.current.currentTime = ratio * videoRef.current.duration;
+                }
+              }}
+              className="w-full bg-neutral-800 h-2 rounded-full overflow-hidden cursor-pointer"
+            >
+              <div 
+                className="h-full bg-gradient-to-r from-amber-500 to-amber-400 rounded-full transition-all duration-150"
+                style={{ width: `${playbackProgress}%` }}
+              />
+            </div>
+            <div className="flex items-center justify-between text-xs text-neutral-300 pt-0.5">
+              <button
+                type="button"
+                onClick={() => {
+                  const vid = videoRef.current;
+                  if (vid) {
+                    if (vid.paused) {
+                      vid.play().catch(() => {});
+                      setIsPlaying(true);
+                    } else {
+                      vid.pause();
+                      setIsPlaying(false);
+                    }
+                  }
+                }}
+                className="text-white hover:text-amber-400 font-bold flex items-center gap-1.5"
+              >
+                {isPlaying ? <Pause className="w-4 h-4 text-amber-400" /> : <Play className="w-4 h-4 fill-white text-white" />}
+                <span>{isPlaying ? 'Pause' : 'Play'}</span>
+              </button>
+              <span className="text-[11px] text-neutral-400 font-mono">
+                {videoRef.current ? Math.floor(videoRef.current.currentTime) : 0}s / {videoRef.current ? Math.floor(videoRef.current.duration || 0) : 0}s
+              </span>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Video vignette / gradient overlay for readable texts */}
       <div className="absolute inset-x-0 bottom-0 h-44 bg-gradient-to-t from-black/90 via-black/40 to-transparent pointer-events-none z-10" />

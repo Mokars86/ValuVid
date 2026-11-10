@@ -33,13 +33,20 @@ import {
   Image as ImageIcon,
   Trophy,
   Sun,
-  Moon
+  Moon,
+  ShoppingBag,
+  Package,
+  Plus
 } from 'lucide-react';
 import { useApp } from '../../context/AppContext';
 import { VideoItem } from '../../types';
 import { sounds } from '../../utils/soundEffects';
 import { MilestoneCertificateModal, MilestoneCertificateData } from './MilestoneCertificateModal';
 import { ProfileShareModal } from './ProfileShareModal';
+import { FollowersListModal } from './FollowersListModal';
+import { VideoViewersModal } from '../feed/VideoViewersModal';
+import { formatCompactNumber } from '../../utils/formatNumber';
+import { getDeletedVideoIds } from '../../services/supabaseClient';
 
 export const ProfileScreen: React.FC = () => {
   const { 
@@ -48,6 +55,7 @@ export const ProfileScreen: React.FC = () => {
     setVideos,
     setCurrentVideoIndex, 
     setActiveTab, 
+    playVideo,
     openAnalytics,
     wallet,
     savedVideoIds,
@@ -62,13 +70,29 @@ export const ProfileScreen: React.FC = () => {
     deleteVideo,
     updateUserProfile,
     theme,
-    toggleTheme
+    toggleTheme,
+    products,
+    orders,
+    openProductCheckout,
+    confirmDelivery,
+    addProduct,
+    deleteProduct
   } = useApp();
 
-  const [activeTab, setActiveTabState] = useState<'videos' | 'liked' | 'saved' | 'unlocked' | 'trophies'>('videos');
+  const [activeTab, setActiveTabState] = useState<'videos' | 'store' | 'liked' | 'saved' | 'unlocked' | 'trophies'>('videos');
   const [selectedCertificate, setSelectedCertificate] = useState<MilestoneCertificateData | null>(null);
   const [profileShareOpen, setProfileShareOpen] = useState(false);
   const [editProfileOpen, setEditProfileOpen] = useState(false);
+  const [viewersModalVideo, setViewersModalVideo] = useState<VideoItem | null>(null);
+
+  // Add Product State for ValuStore
+  const [isAddProductOpen, setIsAddProductOpen] = useState(false);
+  const [newProdTitle, setNewProdTitle] = useState('');
+  const [newProdPrice, setNewProdPrice] = useState('');
+  const [newProdDesc, setNewProdDesc] = useState('');
+  const [newProdType, setNewProdType] = useState<'physical' | 'digital'>('physical');
+  const [newProdDelivery, setNewProdDelivery] = useState('Accra & Kumasi express dispatch within 24-48 hours');
+  const [newProdImage, setNewProdImage] = useState('');
   const [displayName, setDisplayName] = useState(currentUser.name);
   const [username, setUsername] = useState(currentUser.username);
   const [bioText, setBioText] = useState(currentUser.bio);
@@ -128,10 +152,23 @@ export const ProfileScreen: React.FC = () => {
   const [editCategory, setEditCategory] = useState<'ghana' | 'tech' | 'fashion' | 'education' | 'trending' | 'bounties'>('trending');
   const [isSavingEdit, setIsSavingEdit] = useState(false);
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
+  const [followListTab, setFollowListTab] = useState<'followers' | 'following' | null>(null);
 
-  // Filter videos created by user, liked by user, and unlocked (strict matching: no mock videos)
+  // Filter videos strictly uploaded by this user (Excluding mock, seed, or deleted videos)
   const myVideos = useMemo(() => {
+    const deletedIds = getDeletedVideoIds();
     return videos.filter((v) => {
+      if (
+        deletedIds.includes(v.id) ||
+        v.caption === '[DELETED]' ||
+        (v.category as string) === 'deleted' ||
+        (v.title || '').includes('[DELETED]')
+      ) {
+        return false;
+      }
+      if (v.id.startsWith('comm-vid') || v.id.startsWith('vid-sample') || v.id.startsWith('vid-masterclass')) {
+        return false;
+      }
       if (authUser?.id && v.creator?.id === authUser.id) return true;
       if (currentUser?.id && v.creator?.id === currentUser.id) return true;
       if (authUser?.email && v.creator?.email && v.creator.email.toLowerCase() === authUser.email.toLowerCase()) return true;
@@ -147,6 +184,7 @@ export const ProfileScreen: React.FC = () => {
     try {
       const cachedLikes: VideoItem[] = JSON.parse(localStorage.getItem('valuvid_liked_videos') || '[]');
       const likedIds: string[] = JSON.parse(localStorage.getItem('valuvid_liked_video_ids') || '[]');
+      const deletedIds = getDeletedVideoIds();
 
       const map = new Map<string, VideoItem>();
       fromState.forEach((v) => map.set(v.id, v));
@@ -157,6 +195,14 @@ export const ProfileScreen: React.FC = () => {
       });
 
       return Array.from(map.values()).filter((v) => {
+        if (
+          deletedIds.includes(v.id) ||
+          v.caption === '[DELETED]' ||
+          (v.category as string) === 'deleted' ||
+          (v.title || '').includes('[DELETED]')
+        ) {
+          return false;
+        }
         if (likedIds.length > 0) {
           return likedIds.includes(v.id);
         }
@@ -166,11 +212,43 @@ export const ProfileScreen: React.FC = () => {
       return fromState;
     }
   }, [videos]);
-  const unlockedVideos = videos.filter((v) => v.isUnlocked && v.isPayPerUnlock);
+  const unlockedVideos = useMemo(() => {
+    const deletedIds = getDeletedVideoIds();
+    return videos.filter(
+      (v) =>
+        v.isUnlocked &&
+        v.isPayPerUnlock &&
+        !deletedIds.includes(v.id) &&
+        v.caption !== '[DELETED]' &&
+        (v.category as string) !== 'deleted'
+    );
+  }, [videos]);
 
   const savedVideos = useMemo(() => {
-    return videos.filter((v) => savedVideoIds.includes(v.id));
+    const deletedIds = getDeletedVideoIds();
+    return videos.filter(
+      (v) =>
+        savedVideoIds.includes(v.id) &&
+        !deletedIds.includes(v.id) &&
+        v.caption !== '[DELETED]' &&
+        (v.category as string) !== 'deleted'
+    );
   }, [videos, savedVideoIds]);
+
+  // Filter products strictly created by this creator account (no foreign or mock products)
+  const myProducts = useMemo(() => {
+    const curU = (currentUser?.username || '').toLowerCase().trim();
+    return products.filter((p) => (p.creatorUsername || '').toLowerCase().trim() === curU);
+  }, [products, currentUser?.username]);
+
+  // Filter orders where this user is buyer or seller
+  const myOrders = useMemo(() => {
+    const curU = (currentUser?.username || '').toLowerCase().trim();
+    return orders.filter((o) => 
+      (o.buyerUsername || '').toLowerCase().trim() === curU || 
+      (o.sellerUsername || '').toLowerCase().trim() === curU
+    );
+  }, [orders, currentUser?.username]);
 
   // Compute real analytics dynamically from creator's genuine uploads
   const totalMyViews = useMemo(() => {
@@ -179,6 +257,10 @@ export const ProfileScreen: React.FC = () => {
 
   const totalMyLikes = useMemo(() => {
     return myVideos.reduce((sum: number, v: VideoItem) => sum + (v.stats?.likes || 0), 0);
+  }, [myVideos]);
+
+  const totalMyComments = useMemo(() => {
+    return myVideos.reduce((sum: number, v: VideoItem) => sum + (v.stats?.comments || 0), 0);
   }, [myVideos]);
 
   const totalMyTips = useMemo(() => {
@@ -190,9 +272,8 @@ export const ProfileScreen: React.FC = () => {
   }, [currentUser.totalTipsEarned, totalMyTips]);
 
   const realFollowersCount = useMemo(() => {
-    const videoMaxFollowers = myVideos.reduce((max, v) => Math.max(max, v.creator?.followers || 0), 0);
-    return Math.max(currentUser.followers || 0, videoMaxFollowers);
-  }, [currentUser.followers, myVideos]);
+    return typeof currentUser.followers === 'number' ? Math.max(0, currentUser.followers) : 0;
+  }, [currentUser.followers]);
 
   // Real milestone progress calculations based on actual user data
   const viewsProgress = useMemo(() => {
@@ -223,6 +304,18 @@ export const ProfileScreen: React.FC = () => {
   const mostTippedYearProgress = useMemo(() => {
     return Math.min(100, Math.round((realTipsEarned / 10000) * 100));
   }, [realTipsEarned]);
+
+  const mostLikedYearProgress = useMemo(() => {
+    return Math.min(100, Math.round((totalMyLikes / 5000) * 100));
+  }, [totalMyLikes]);
+
+  const mostCommentsYearProgress = useMemo(() => {
+    return Math.min(100, Math.round((totalMyComments / 1000) * 100));
+  }, [totalMyComments]);
+
+  const mostViewsYearProgress = useMemo(() => {
+    return Math.min(100, Math.round((totalMyViews / 50000) * 100));
+  }, [totalMyViews]);
 
   // Real unlocked certificates based exclusively on genuine user achievements
   const realCertificates: MilestoneCertificateData[] = useMemo(() => {
@@ -406,8 +499,80 @@ export const ProfileScreen: React.FC = () => {
       });
     }
 
+    // Flagship Annual Award: Most Liked Creator of the Year
+    if (totalMyLikes >= 5000 || currentUser.badge?.includes('Top Liked')) {
+      list.push({
+        id: 'trophy-most-liked',
+        title: 'Most Liked Creator of the Year',
+        category: 'leaderboard',
+        badgeName: 'Most Liked Creator 🏆👍',
+        badgeIcon: '👍',
+        milestoneDescription: 'ValuVid Flagship Trophy honoring outstanding creator adoration, viewer appreciation, and audience support. "Your Content Inspires Millions!"',
+        recipientName: currentUser.name,
+        recipientUsername: currentUser.username,
+        recipientAvatar: currentUser.avatar,
+        issueDate: 'Annual Honor',
+        credentialId: `VV-LIKED-${currentUser.username.toUpperCase()}`,
+        metricLabel: 'Likes Milestone',
+        metricValue: `${formatCompactNumber(totalMyLikes)} Likes`,
+        plaqueEligible: true,
+        plaqueTier: 'Most Liked Crystal of the Year',
+        plaqueImage: '/trophies/trophy-most-liked.jpg',
+        isPlaqueAward: true,
+        isUnlocked: true,
+      });
+    }
+
+    // Flagship Annual Award: Most Comments of the Year
+    if (totalMyComments >= 1000 || currentUser.badge?.includes('Top Comments')) {
+      list.push({
+        id: 'trophy-most-comments',
+        title: 'Most Comments of the Year',
+        category: 'leaderboard',
+        badgeName: 'Conversation Starter 💬🏆',
+        badgeIcon: '💬',
+        milestoneDescription: 'ValuVid Award of Excellence celebrating viral audience discussions, vibrant creator-community dialogue, and high watch engagement.',
+        recipientName: currentUser.name,
+        recipientUsername: currentUser.username,
+        recipientAvatar: currentUser.avatar,
+        issueDate: 'Award of Excellence 2023-2024',
+        credentialId: `VV-COMMENT-${currentUser.username.toUpperCase()}`,
+        metricLabel: 'Comments Milestone',
+        metricValue: `${formatCompactNumber(totalMyComments)} Comments`,
+        plaqueEligible: true,
+        plaqueTier: 'Most Comments Crystal Award',
+        plaqueImage: '/trophies/trophy-most-comments.jpg',
+        isPlaqueAward: true,
+        isUnlocked: true,
+      });
+    }
+
+    // Flagship Annual Award: Most Views of the Year
+    if (totalMyViews >= 50000 || currentUser.badge?.includes('Top Views')) {
+      list.push({
+        id: 'trophy-most-views',
+        title: 'Most Views of the Year',
+        category: 'viral_views',
+        badgeName: 'Viral Visionary of the Year 👁️🔥',
+        badgeIcon: '🔥',
+        milestoneDescription: 'ValuVid Crowned Flame Crystal Trophy honoring record-setting view counts, viral vertical reach, and audience watch time.',
+        recipientName: currentUser.name,
+        recipientUsername: currentUser.username,
+        recipientAvatar: currentUser.avatar,
+        issueDate: 'Annual Honor',
+        credentialId: `VV-VIEWS-${currentUser.username.toUpperCase()}`,
+        metricLabel: 'Views Milestone',
+        metricValue: `${formatCompactNumber(totalMyViews)} Views`,
+        plaqueEligible: true,
+        plaqueTier: 'Most Views Crystal Flame',
+        plaqueImage: '/trophies/trophy-most-views.jpg',
+        isPlaqueAward: true,
+        isUnlocked: true,
+      });
+    }
+
     return list;
-  }, [currentUser, totalMyViews, realTipsEarned, realFollowersCount]);
+  }, [currentUser, totalMyViews, totalMyLikes, totalMyComments, realTipsEarned, realFollowersCount]);
 
   const isChampion = Boolean(
     currentUser.badge || 
@@ -456,13 +621,7 @@ export const ProfileScreen: React.FC = () => {
   };
 
   const handleSelectVideo = (video: VideoItem) => {
-    let idx = videos.findIndex((v) => v.id === video.id);
-    if (idx === -1) {
-      setVideos((prev) => [video, ...prev]);
-      idx = 0;
-    }
-    setCurrentVideoIndex(idx);
-    setActiveTab('feed');
+    playVideo(video);
   };
 
   const handleShareProfile = () => {
@@ -681,27 +840,35 @@ export const ProfileScreen: React.FC = () => {
             </span>
           </div>
 
-          {/* FOLLOWER / LIKES STATS */}
+          {/* FOLLOWER / LIKES STATS (TikTok-Style Clickable Pillars) */}
           <div className={`flex items-center justify-center gap-3 min-[360px]:gap-6 mt-3.5 w-full py-2 border-y ${
             theme === 'light' ? 'border-slate-200' : 'border-neutral-900'
           }`}>
-            <div className="flex flex-col items-center">
-              <span className={`text-sm font-bold ${theme === 'light' ? 'text-slate-900' : 'text-white'}`}>
-                {currentUser.following || 0}
+            <button
+              onClick={() => setFollowListTab('following')}
+              className="flex flex-col items-center cursor-pointer group active:scale-95 transition-transform"
+              title="View accounts you are following"
+            >
+              <span className={`text-sm font-bold group-hover:text-amber-500 transition-colors ${theme === 'light' ? 'text-slate-900' : 'text-white'}`}>
+                {formatCompactNumber(currentUser.following || 0)}
               </span>
               <span className={`text-[10px] ${theme === 'light' ? 'text-slate-500' : 'text-neutral-400'}`}>Following</span>
-            </div>
+            </button>
             <div className={`w-px h-6 ${theme === 'light' ? 'bg-slate-200' : 'bg-neutral-800'}`} />
-            <div className="flex flex-col items-center">
-              <span className={`text-sm font-bold ${theme === 'light' ? 'text-slate-900' : 'text-white'}`}>
-                {realFollowersCount.toLocaleString()}
+            <button
+              onClick={() => setFollowListTab('followers')}
+              className="flex flex-col items-center cursor-pointer group active:scale-95 transition-transform"
+              title="View your followers"
+            >
+              <span className={`text-sm font-bold group-hover:text-amber-500 transition-colors ${theme === 'light' ? 'text-slate-900' : 'text-white'}`}>
+                {formatCompactNumber(realFollowersCount)}
               </span>
               <span className={`text-[10px] ${theme === 'light' ? 'text-slate-500' : 'text-neutral-400'}`}>Followers</span>
-            </div>
+            </button>
             <div className={`w-px h-6 ${theme === 'light' ? 'bg-slate-200' : 'bg-neutral-800'}`} />
             <div className="flex flex-col items-center">
               <span className={`text-sm font-bold ${theme === 'light' ? 'text-slate-900' : 'text-white'}`}>
-                {totalMyLikes.toLocaleString()}
+                {formatCompactNumber(totalMyLikes)}
               </span>
               <span className={`text-[10px] ${theme === 'light' ? 'text-slate-500' : 'text-neutral-400'}`}>Likes</span>
             </div>
@@ -720,7 +887,7 @@ export const ProfileScreen: React.FC = () => {
             <span className={`text-[10px] ${theme === 'light' ? 'text-slate-500' : 'text-neutral-400'}`}>All Time</span>
           </div>
 
-          <div className="grid grid-cols-2 gap-2.5">
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5">
             <div className={`${theme === 'light' ? 'bg-slate-50 border-slate-200' : 'bg-neutral-950/60 border-neutral-800/80'} p-3 rounded-2xl border`}>
               <span className={`text-[10px] block mb-0.5 ${theme === 'light' ? 'text-slate-500' : 'text-neutral-400'}`}>Est. Creator Yield</span>
               <div className="text-base font-bold text-emerald-500">
@@ -734,7 +901,7 @@ export const ProfileScreen: React.FC = () => {
             <div className={`${theme === 'light' ? 'bg-slate-50 border-slate-200' : 'bg-neutral-950/60 border-neutral-800/80'} p-3 rounded-2xl border`}>
               <span className={`text-[10px] block mb-0.5 ${theme === 'light' ? 'text-slate-500' : 'text-neutral-400'}`}>Total Video Views</span>
               <div className={`text-base font-bold ${theme === 'light' ? 'text-slate-900' : 'text-white'}`}>
-                {totalMyViews > 999 ? `${(totalMyViews / 1000).toFixed(1)}K` : totalMyViews}
+                {formatCompactNumber(totalMyViews)}
               </div>
               <span className={`text-[9px] flex items-center gap-1 mt-0.5 ${theme === 'light' ? 'text-slate-500' : 'text-neutral-500'}`}>
                 <span className="text-cyan-500 font-bold">{myVideos.length > 0 ? 'Verified' : 'No views yet'}</span>
@@ -773,80 +940,101 @@ export const ProfileScreen: React.FC = () => {
 
         {/* TABBED CONTENT GRID */}
         <div>
-          {/* Tab Switcher */}
-          <div className={`grid grid-cols-5 border-b ${theme === 'light' ? 'border-slate-200' : 'border-neutral-800'} mb-3`}>
+          {/* Tab Switcher: Horizontal scroll on mobile / iPhone SE, 6-col grid on larger screens */}
+          <div className={`flex items-center overflow-x-auto no-scrollbar scroll-smooth border-b ${theme === 'light' ? 'border-slate-200' : 'border-neutral-800'} mb-3 gap-1 sm:grid sm:grid-cols-6`}>
+            {/* 1. Videos Tab */}
             <button
               onClick={() => setActiveTabState('videos')}
-              className={`flex items-center justify-center gap-1 py-2 px-0.5 text-[10px] min-[360px]:text-[11px] sm:text-xs font-semibold relative transition-colors ${
+              className={`flex items-center justify-center gap-1.5 py-2.5 px-3 sm:px-1 text-[11px] sm:text-xs font-semibold relative transition-colors whitespace-nowrap shrink-0 sm:shrink ${
                 activeTab === 'videos'
                   ? (theme === 'light' ? 'text-amber-600 font-bold' : 'text-amber-400 font-bold')
                   : (theme === 'light' ? 'text-slate-500 hover:text-slate-900' : 'text-neutral-400 hover:text-white')
               }`}
             >
               <Grid3X3 className="w-3.5 h-3.5 shrink-0" />
-              <span className="truncate">Videos ({myVideos.length})</span>
+              <span>Videos</span>
               {activeTab === 'videos' && (
-                <span className={`absolute bottom-0 inset-x-1 sm:inset-x-2 h-0.5 ${theme === 'light' ? 'bg-amber-500' : 'bg-amber-400'} rounded-full`} />
+                <span className={`absolute bottom-0 inset-x-2 sm:inset-x-2 h-0.5 ${theme === 'light' ? 'bg-amber-500' : 'bg-amber-400'} rounded-full`} />
               )}
             </button>
 
+            {/* 2. Creator Store Tab */}
+            <button
+              onClick={() => setActiveTabState('store')}
+              className={`flex items-center justify-center gap-1.5 py-2.5 px-3 sm:px-1 text-[11px] sm:text-xs font-semibold relative transition-colors whitespace-nowrap shrink-0 sm:shrink ${
+                activeTab === 'store'
+                  ? (theme === 'light' ? 'text-amber-600 font-bold' : 'text-amber-400 font-bold')
+                  : (theme === 'light' ? 'text-slate-500 hover:text-slate-900' : 'text-neutral-400 hover:text-white')
+              }`}
+            >
+              <ShoppingBag className="w-3.5 h-3.5 shrink-0" />
+              <span>Store ({myProducts.length})</span>
+              {activeTab === 'store' && (
+                <span className={`absolute bottom-0 inset-x-2 sm:inset-x-2 h-0.5 ${theme === 'light' ? 'bg-amber-500' : 'bg-amber-400'} rounded-full`} />
+              )}
+            </button>
+
+            {/* 3. Saved Videos Tab */}
             <button
               onClick={() => setActiveTabState('saved')}
-              className={`flex items-center justify-center gap-1 py-2 px-0.5 text-[10px] min-[360px]:text-[11px] sm:text-xs font-semibold relative transition-colors ${
+              className={`flex items-center justify-center gap-1.5 py-2.5 px-3 sm:px-1 text-[11px] sm:text-xs font-semibold relative transition-colors whitespace-nowrap shrink-0 sm:shrink ${
                 activeTab === 'saved'
                   ? (theme === 'light' ? 'text-amber-600 font-bold' : 'text-amber-400 font-bold')
                   : (theme === 'light' ? 'text-slate-500 hover:text-slate-900' : 'text-neutral-400 hover:text-white')
               }`}
             >
               <Bookmark className={`w-3.5 h-3.5 shrink-0 ${activeTab === 'saved' ? (theme === 'light' ? 'fill-amber-500 text-amber-500' : 'fill-amber-400 text-amber-400') : ''}`} />
-              <span className="truncate">Saved ({savedVideos.length})</span>
+              <span>Saved ({savedVideos.length})</span>
               {activeTab === 'saved' && (
-                <span className={`absolute bottom-0 inset-x-1 sm:inset-x-2 h-0.5 ${theme === 'light' ? 'bg-amber-500' : 'bg-amber-400'} rounded-full`} />
+                <span className={`absolute bottom-0 inset-x-2 sm:inset-x-2 h-0.5 ${theme === 'light' ? 'bg-amber-500' : 'bg-amber-400'} rounded-full`} />
               )}
             </button>
 
+            {/* 4. Liked Videos Tab */}
             <button
               onClick={() => setActiveTabState('liked')}
-              className={`flex items-center justify-center gap-1 py-2 px-0.5 text-[10px] min-[360px]:text-[11px] sm:text-xs font-semibold relative transition-colors ${
+              className={`flex items-center justify-center gap-1.5 py-2.5 px-3 sm:px-1 text-[11px] sm:text-xs font-semibold relative transition-colors whitespace-nowrap shrink-0 sm:shrink ${
                 activeTab === 'liked'
                   ? (theme === 'light' ? 'text-amber-600 font-bold' : 'text-amber-400 font-bold')
                   : (theme === 'light' ? 'text-slate-500 hover:text-slate-900' : 'text-neutral-400 hover:text-white')
               }`}
             >
               <Heart className="w-3.5 h-3.5 shrink-0" />
-              <span className="truncate">Liked ({likedVideos.length})</span>
+              <span>Liked ({likedVideos.length})</span>
               {activeTab === 'liked' && (
-                <span className={`absolute bottom-0 inset-x-1 sm:inset-x-2 h-0.5 ${theme === 'light' ? 'bg-amber-500' : 'bg-amber-400'} rounded-full`} />
+                <span className={`absolute bottom-0 inset-x-2 sm:inset-x-2 h-0.5 ${theme === 'light' ? 'bg-amber-500' : 'bg-amber-400'} rounded-full`} />
               )}
             </button>
 
+            {/* 5. Unlocked Videos Tab */}
             <button
               onClick={() => setActiveTabState('unlocked')}
-              className={`flex items-center justify-center gap-1 py-2 px-0.5 text-[10px] min-[360px]:text-[11px] sm:text-xs font-semibold relative transition-colors ${
+              className={`flex items-center justify-center gap-1.5 py-2.5 px-3 sm:px-1 text-[11px] sm:text-xs font-semibold relative transition-colors whitespace-nowrap shrink-0 sm:shrink ${
                 activeTab === 'unlocked'
                   ? (theme === 'light' ? 'text-amber-600 font-bold' : 'text-amber-400 font-bold')
                   : (theme === 'light' ? 'text-slate-500 hover:text-slate-900' : 'text-neutral-400 hover:text-white')
               }`}
             >
               <Lock className="w-3.5 h-3.5 shrink-0" />
-              <span className="truncate">Unlocked ({unlockedVideos.length})</span>
+              <span>Unlocked ({unlockedVideos.length})</span>
               {activeTab === 'unlocked' && (
-                <span className={`absolute bottom-0 inset-x-1 sm:inset-x-2 h-0.5 ${theme === 'light' ? 'bg-amber-500' : 'bg-amber-400'} rounded-full`} />
+                <span className={`absolute bottom-0 inset-x-2 sm:inset-x-2 h-0.5 ${theme === 'light' ? 'bg-amber-500' : 'bg-amber-400'} rounded-full`} />
               )}
             </button>
 
+            {/* 6. Trophies & Milestones Tab (At the Last Position) */}
             <button
               onClick={() => setActiveTabState('trophies')}
-              className={`flex items-center justify-center gap-1 py-2 px-0.5 text-[10px] min-[360px]:text-[11px] sm:text-xs font-semibold relative transition-colors ${
+              className={`flex items-center justify-center gap-1.5 py-2.5 px-3 sm:px-1 text-[11px] sm:text-xs font-semibold relative transition-colors whitespace-nowrap shrink-0 sm:shrink ${
                 activeTab === 'trophies'
                   ? (theme === 'light' ? 'text-amber-600 font-bold' : 'text-amber-400 font-bold')
                   : (theme === 'light' ? 'text-slate-500 hover:text-slate-900' : 'text-neutral-400 hover:text-white')
               }`}
             >
-              <Trophy className={`w-3.5 h-3.5 shrink-0 ${theme === 'light' ? 'text-amber-500' : 'text-amber-400'}`} />
-              <span className="truncate">Awards ({realCertificates.length})</span>
+              <Trophy className={`w-3.5 h-3.5 shrink-0 ${activeTab === 'trophies' ? 'text-amber-500' : (theme === 'light' ? 'text-amber-600' : 'text-amber-400')}`} />
+              <span>Trophies ({realCertificates.length})</span>
               {activeTab === 'trophies' && (
-                <span className={`absolute bottom-0 inset-x-1 sm:inset-x-2 h-0.5 ${theme === 'light' ? 'bg-amber-500' : 'bg-amber-400'} rounded-full`} />
+                <span className={`absolute bottom-0 inset-x-2 sm:inset-x-2 h-0.5 ${theme === 'light' ? 'bg-amber-500' : 'bg-amber-400'} rounded-full`} />
               )}
             </button>
           </div>
@@ -1039,7 +1227,7 @@ export const ProfileScreen: React.FC = () => {
                   Unlike platforms that only reward follower counts, ValuVid sends physical hardware awards based on community tips and creator excellence.
                 </p>
 
-                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 pt-1 text-left">
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3 pt-1 text-left">
                   {/* Plaque 1: Rising Star Creators Award */}
                   <div 
                     onClick={() => {
@@ -1386,6 +1574,270 @@ export const ProfileScreen: React.FC = () => {
                       </span>
                     </div>
                   </div>
+
+                  {/* Plaque 5: Most Liked Creator of the Year */}
+                  <div 
+                    onClick={() => {
+                      sounds.playLikePop();
+                      setSelectedCertificate({
+                        id: 'trophy-most-liked',
+                        title: 'Most Liked Creator of the Year',
+                        category: 'leaderboard',
+                        badgeName: 'Most Liked Creator 🏆👍',
+                        badgeIcon: '👍',
+                        milestoneDescription: 'ValuVid Flagship Trophy honoring outstanding creator adoration, viewer appreciation, and audience support. "Your Content Inspires Millions!"',
+                        recipientName: currentUser.name,
+                        recipientUsername: currentUser.username,
+                        recipientAvatar: currentUser.avatar,
+                        issueDate: 'Annual Honor',
+                        credentialId: `VV-LIKED-${currentUser.username.toUpperCase()}`,
+                        metricLabel: 'Likes Requirement',
+                        metricValue: `${formatCompactNumber(totalMyLikes)} / 5,000 Likes`,
+                        plaqueEligible: mostLikedYearProgress >= 100,
+                        plaqueTier: 'Most Liked Crystal of the Year',
+                        plaqueImage: '/trophies/trophy-most-liked.jpg',
+                        isPlaqueAward: true,
+                        isUnlocked: mostLikedYearProgress >= 100,
+                      });
+                    }}
+                    className={`border rounded-2xl p-3 flex flex-col justify-between gap-2.5 shadow-xl hover:scale-[1.02] cursor-pointer transition-all group relative overflow-hidden ${
+                      theme === 'light'
+                        ? 'bg-rose-50/60 border-rose-300 hover:border-rose-500'
+                        : 'bg-black/60 border-rose-500/50 hover:border-rose-400'
+                    }`}
+                  >
+                    <div className="absolute -top-10 -right-10 w-24 h-24 bg-rose-500/20 rounded-full blur-xl pointer-events-none" />
+
+                    <div>
+                      {/* Trophy Photo Header */}
+                      <div className={`relative aspect-square w-full rounded-xl overflow-hidden mb-2.5 border flex items-center justify-center shadow-inner ${
+                        theme === 'light' ? 'bg-rose-100/40 border-rose-200' : 'bg-black/40 border-rose-500/30'
+                      }`}>
+                        <img 
+                          src="/trophies/trophy-most-liked.jpg" 
+                          alt="Most Liked Creator of the Year"
+                          className="w-full h-full object-contain group-hover:scale-105 transition-transform duration-300" 
+                        />
+                        <div className="absolute top-2 right-2">
+                          {mostLikedYearProgress >= 100 ? (
+                            <span className="text-[9px] bg-gradient-to-r from-rose-500 to-pink-400 text-white font-black px-2 py-0.5 rounded-full shadow-lg flex items-center gap-1">
+                              🏆 ISSUED
+                            </span>
+                          ) : (
+                            <span className="text-[9px] bg-black/80 backdrop-blur-md text-rose-300 border border-rose-400/40 px-2 py-0.5 rounded-full font-bold">
+                              🔒 {mostLikedYearProgress}%
+                            </span>
+                          )}
+                        </div>
+                      </div>
+
+                      <div className="flex items-center justify-between mb-1">
+                        <span className={`text-xs font-bold flex items-center gap-1 ${theme === 'light' ? 'text-rose-800' : 'text-rose-300'}`}>
+                          👍 Most Liked
+                        </span>
+                        <span className="text-[9px] bg-rose-500/20 text-rose-700 border border-rose-500/30 px-1.5 py-0.2 rounded font-bold">
+                          Annual Award
+                        </span>
+                      </div>
+                      <div className={`text-[11px] font-bold leading-tight ${theme === 'light' ? 'text-slate-900' : 'text-white'}`}>Most Liked Creator of the Year</div>
+                      <p className={`text-[9px] mt-1 leading-tight ${theme === 'light' ? 'text-slate-600' : 'text-neutral-400'}`}>
+                        3D gold thumbs-up & play arrow with spiral ribbon on engraved ValuVid pedestal.
+                      </p>
+                    </div>
+
+                    <div className={`pt-2 border-t flex flex-col gap-1 ${theme === 'light' ? 'border-rose-200' : 'border-white/10'}`}>
+                      <span className={`text-[8px] font-mono ${theme === 'light' ? 'text-rose-800' : 'text-rose-300/80'}`}>Req: 5,000 Total Likes</span>
+                      <div className={`w-full h-1.5 rounded-full overflow-hidden ${theme === 'light' ? 'bg-slate-200' : 'bg-neutral-800'}`}>
+                        <div 
+                          className="h-full bg-gradient-to-r from-rose-500 via-pink-400 to-amber-300 rounded-full shadow-[0_0_8px_rgba(244,63,94,0.5)]"
+                          style={{ width: `${mostLikedYearProgress}%` }}
+                        />
+                      </div>
+                      <span className={`text-[9px] font-bold ${
+                        mostLikedYearProgress >= 100 
+                          ? (theme === 'light' ? 'text-rose-700' : 'text-rose-300')
+                          : (theme === 'light' ? 'text-slate-500' : 'text-neutral-400')
+                      }`}>
+                        {mostLikedYearProgress}% Completed • Tap to Preview
+                      </span>
+                    </div>
+                  </div>
+
+                  {/* Plaque 6: Most Comments of the Year */}
+                  <div 
+                    onClick={() => {
+                      sounds.playLikePop();
+                      setSelectedCertificate({
+                        id: 'trophy-most-comments',
+                        title: 'Most Comments of the Year',
+                        category: 'leaderboard',
+                        badgeName: 'Conversation Starter 💬🏆',
+                        badgeIcon: '💬',
+                        milestoneDescription: 'ValuVid Award of Excellence celebrating viral audience discussions, vibrant creator-community dialogue, and high watch engagement.',
+                        recipientName: currentUser.name,
+                        recipientUsername: currentUser.username,
+                        recipientAvatar: currentUser.avatar,
+                        issueDate: 'Award of Excellence 2023-2024',
+                        credentialId: `VV-COMMENT-${currentUser.username.toUpperCase()}`,
+                        metricLabel: 'Comments Requirement',
+                        metricValue: `${formatCompactNumber(totalMyComments)} / 1,000 Comments`,
+                        plaqueEligible: mostCommentsYearProgress >= 100,
+                        plaqueTier: 'Most Comments Crystal Award',
+                        plaqueImage: '/trophies/trophy-most-comments.jpg',
+                        isPlaqueAward: true,
+                        isUnlocked: mostCommentsYearProgress >= 100,
+                      });
+                    }}
+                    className={`border rounded-2xl p-3 flex flex-col justify-between gap-2.5 shadow-xl hover:scale-[1.02] cursor-pointer transition-all group relative overflow-hidden ${
+                      theme === 'light'
+                        ? 'bg-amber-50/60 border-amber-300 hover:border-amber-500'
+                        : 'bg-black/60 border-amber-500/50 hover:border-amber-400'
+                    }`}
+                  >
+                    <div className="absolute -top-10 -right-10 w-24 h-24 bg-amber-500/20 rounded-full blur-xl pointer-events-none" />
+
+                    <div>
+                      {/* Trophy Photo Header */}
+                      <div className={`relative aspect-square w-full rounded-xl overflow-hidden mb-2.5 border flex items-center justify-center shadow-inner ${
+                        theme === 'light' ? 'bg-amber-100/40 border-amber-200' : 'bg-black/40 border-amber-500/30'
+                      }`}>
+                        <img 
+                          src="/trophies/trophy-most-comments.jpg" 
+                          alt="Most Comments of the Year"
+                          className="w-full h-full object-contain group-hover:scale-105 transition-transform duration-300" 
+                        />
+                        <div className="absolute top-2 right-2">
+                          {mostCommentsYearProgress >= 100 ? (
+                            <span className="text-[9px] bg-gradient-to-r from-amber-400 to-yellow-300 text-neutral-950 font-black px-2 py-0.5 rounded-full shadow-lg flex items-center gap-1">
+                              🏆 ISSUED
+                            </span>
+                          ) : (
+                            <span className="text-[9px] bg-black/80 backdrop-blur-md text-amber-300 border border-amber-400/40 px-2 py-0.5 rounded-full font-bold">
+                              🔒 {mostCommentsYearProgress}%
+                            </span>
+                          )}
+                        </div>
+                      </div>
+
+                      <div className="flex items-center justify-between mb-1">
+                        <span className={`text-xs font-bold flex items-center gap-1 ${theme === 'light' ? 'text-amber-800' : 'text-amber-300'}`}>
+                          💬 Most Comments
+                        </span>
+                        <span className="text-[9px] bg-amber-500/20 text-amber-700 border border-amber-500/30 px-1.5 py-0.2 rounded font-bold">
+                          Excellence Award
+                        </span>
+                      </div>
+                      <div className={`text-[11px] font-bold leading-tight ${theme === 'light' ? 'text-slate-900' : 'text-white'}`}>Most Comments of the Year</div>
+                      <p className={`text-[9px] mt-1 leading-tight ${theme === 'light' ? 'text-slate-600' : 'text-neutral-400'}`}>
+                        Crystal obelisk with golden laurel wreaths & glowing neon speech bubbles.
+                      </p>
+                    </div>
+
+                    <div className={`pt-2 border-t flex flex-col gap-1 ${theme === 'light' ? 'border-amber-200' : 'border-white/10'}`}>
+                      <span className={`text-[8px] font-mono ${theme === 'light' ? 'text-amber-800' : 'text-amber-300/80'}`}>Req: 1,000 Video Comments</span>
+                      <div className={`w-full h-1.5 rounded-full overflow-hidden ${theme === 'light' ? 'bg-slate-200' : 'bg-neutral-800'}`}>
+                        <div 
+                          className="h-full bg-gradient-to-r from-amber-500 to-yellow-400 rounded-full shadow-[0_0_8px_rgba(245,158,11,0.5)]"
+                          style={{ width: `${mostCommentsYearProgress}%` }}
+                        />
+                      </div>
+                      <span className={`text-[9px] font-bold ${
+                        mostCommentsYearProgress >= 100 
+                          ? (theme === 'light' ? 'text-amber-700' : 'text-amber-300')
+                          : (theme === 'light' ? 'text-slate-500' : 'text-neutral-400')
+                      }`}>
+                        {mostCommentsYearProgress}% Completed • Tap to Preview
+                      </span>
+                    </div>
+                  </div>
+
+                  {/* Plaque 7: Most Views of the Year */}
+                  <div 
+                    onClick={() => {
+                      sounds.playLikePop();
+                      setSelectedCertificate({
+                        id: 'trophy-most-views',
+                        title: 'Most Views of the Year',
+                        category: 'viral_views',
+                        badgeName: 'Viral Visionary of the Year 👁️🔥',
+                        badgeIcon: '🔥',
+                        milestoneDescription: 'ValuVid Crowned Flame Crystal Trophy honoring record-setting view counts, viral vertical reach, and audience watch time.',
+                        recipientName: currentUser.name,
+                        recipientUsername: currentUser.username,
+                        recipientAvatar: currentUser.avatar,
+                        issueDate: 'Annual Honor',
+                        credentialId: `VV-VIEWS-${currentUser.username.toUpperCase()}`,
+                        metricLabel: 'Views Requirement',
+                        metricValue: `${formatCompactNumber(totalMyViews)} / 50,000 Views`,
+                        plaqueEligible: mostViewsYearProgress >= 100,
+                        plaqueTier: 'Most Views Crystal Flame',
+                        plaqueImage: '/trophies/trophy-most-views.jpg',
+                        isPlaqueAward: true,
+                        isUnlocked: mostViewsYearProgress >= 100,
+                      });
+                    }}
+                    className={`border rounded-2xl p-3 flex flex-col justify-between gap-2.5 shadow-xl hover:scale-[1.02] cursor-pointer transition-all group relative overflow-hidden ${
+                      theme === 'light'
+                        ? 'bg-cyan-50/60 border-cyan-300 hover:border-cyan-500'
+                        : 'bg-black/60 border-cyan-500/50 hover:border-cyan-400'
+                    }`}
+                  >
+                    <div className="absolute -top-10 -right-10 w-24 h-24 bg-cyan-500/20 rounded-full blur-xl pointer-events-none" />
+
+                    <div>
+                      {/* Trophy Photo Header */}
+                      <div className={`relative aspect-square w-full rounded-xl overflow-hidden mb-2.5 border flex items-center justify-center shadow-inner ${
+                        theme === 'light' ? 'bg-cyan-100/40 border-cyan-200' : 'bg-black/40 border-cyan-500/30'
+                      }`}>
+                        <img 
+                          src="/trophies/trophy-most-views.jpg" 
+                          alt="Most Views of the Year"
+                          className="w-full h-full object-contain group-hover:scale-105 transition-transform duration-300" 
+                        />
+                        <div className="absolute top-2 right-2">
+                          {mostViewsYearProgress >= 100 ? (
+                            <span className="text-[9px] bg-gradient-to-r from-cyan-400 to-blue-500 text-neutral-950 font-black px-2 py-0.5 rounded-full shadow-lg flex items-center gap-1">
+                              🔥 ISSUED
+                            </span>
+                          ) : (
+                            <span className="text-[9px] bg-black/80 backdrop-blur-md text-cyan-300 border border-cyan-400/40 px-2 py-0.5 rounded-full font-bold">
+                              🔒 {mostViewsYearProgress}%
+                            </span>
+                          )}
+                        </div>
+                      </div>
+
+                      <div className="flex items-center justify-between mb-1">
+                        <span className={`text-xs font-bold flex items-center gap-1 ${theme === 'light' ? 'text-cyan-800' : 'text-cyan-300'}`}>
+                          🔥 Most Views
+                        </span>
+                        <span className="text-[9px] bg-cyan-500/20 text-cyan-700 border border-cyan-500/30 px-1.5 py-0.2 rounded font-bold">
+                          Annual Flagship
+                        </span>
+                      </div>
+                      <div className={`text-[11px] font-bold leading-tight ${theme === 'light' ? 'text-slate-900' : 'text-white'}`}>Most Views of the Year</div>
+                      <p className={`text-[9px] mt-1 leading-tight ${theme === 'light' ? 'text-slate-600' : 'text-neutral-400'}`}>
+                        Crystal obelisk crowned with golden eternal flame and ValuVid eye emblem.
+                      </p>
+                    </div>
+
+                    <div className={`pt-2 border-t flex flex-col gap-1 ${theme === 'light' ? 'border-cyan-200' : 'border-white/10'}`}>
+                      <span className={`text-[8px] font-mono ${theme === 'light' ? 'text-cyan-800' : 'text-cyan-300/80'}`}>Req: 50,000 Total Views</span>
+                      <div className={`w-full h-1.5 rounded-full overflow-hidden ${theme === 'light' ? 'bg-slate-200' : 'bg-neutral-800'}`}>
+                        <div 
+                          className="h-full bg-gradient-to-r from-cyan-500 via-blue-400 to-amber-300 rounded-full shadow-[0_0_8px_rgba(6,182,212,0.5)]"
+                          style={{ width: `${mostViewsYearProgress}%` }}
+                        />
+                      </div>
+                      <span className={`text-[9px] font-bold ${
+                        mostViewsYearProgress >= 100 
+                          ? (theme === 'light' ? 'text-cyan-700' : 'text-cyan-300')
+                          : (theme === 'light' ? 'text-slate-500' : 'text-neutral-400')
+                      }`}>
+                        {mostViewsYearProgress}% Completed • Tap to Preview
+                      </span>
+                    </div>
+                  </div>
                 </div>
               </div>
             </div>
@@ -1394,7 +1846,7 @@ export const ProfileScreen: React.FC = () => {
             <div>
               {activeTab === 'videos' && (
                 myVideos.length > 0 ? (
-                  <div className="grid grid-cols-3 gap-1.5">
+                  <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-5 gap-1.5 sm:gap-2">
                     {myVideos.map((video: VideoItem) => (
                       <div
                         key={video.id}
@@ -1437,10 +1889,22 @@ export const ProfileScreen: React.FC = () => {
                             <Coins className="w-2.5 h-2.5 shrink-0" />
                             <span>{(video.stats?.tipsTotalGHS || 0).toFixed(0)}</span>
                           </div>
-                          <div className="flex items-center gap-0.5 text-neutral-300">
-                            <Eye className="w-2.5 h-2.5 shrink-0" />
-                            <span>{video.stats?.views > 999 ? `${((video.stats?.views || 0) / 1000).toFixed(1)}k` : (video.stats?.views || 0)}</span>
+                          <div className="flex items-center gap-0.5 text-rose-400 font-bold" title="Total video likes">
+                            <Heart className="w-2.5 h-2.5 shrink-0 fill-rose-500 text-rose-500" />
+                            <span>{formatCompactNumber(video.stats?.likes || 0)}</span>
                           </div>
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setViewersModalVideo(video);
+                            }}
+                            className="flex items-center gap-0.5 text-cyan-400 hover:text-cyan-300 font-bold active:scale-90 transition-all cursor-pointer p-0.5 rounded"
+                            title="See who watched this video"
+                          >
+                            <Eye className="w-2.5 h-2.5 shrink-0" />
+                            <span>{formatCompactNumber(video.stats?.views || 0)}</span>
+                          </button>
                         </div>
                       </div>
                     ))}
@@ -1466,9 +1930,170 @@ export const ProfileScreen: React.FC = () => {
                 )
               )}
 
+              {/* ValuStore Tab: Creator Storefront & Escrow Orders */}
+              {activeTab === 'store' && (
+                <div className="flex flex-col gap-3 sm:gap-4 animate-fade-in pb-6">
+                  {/* Store Header & Actions */}
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="min-w-0 flex-1">
+                      <h3 className={`text-xs sm:text-sm font-bold truncate ${theme === 'light' ? 'text-slate-900' : 'text-white'}`}>
+                        My Storefront
+                      </h3>
+                      <p className={`text-[10px] sm:text-[11px] truncate ${theme === 'light' ? 'text-slate-500' : 'text-neutral-400'}`}>
+                        Escrow-secured merchandise & digital downloads
+                      </p>
+                    </div>
+                    <button
+                      onClick={() => setIsAddProductOpen(true)}
+                      className="flex items-center gap-1 py-1.5 px-2.5 sm:px-3 rounded-xl bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-400 hover:to-amber-500 text-neutral-950 font-black text-xs shadow-md active:scale-95 transition-all shrink-0"
+                    >
+                      <Plus className="w-3.5 h-3.5" />
+                      <span>+ List Item</span>
+                    </button>
+                  </div>
+
+                  {/* If user has no products listed yet */}
+                  {myProducts.length === 0 ? (
+                    <div className={`p-5 min-[375px]:p-6 sm:p-8 rounded-2xl border text-center flex flex-col items-center justify-center gap-2.5 sm:gap-3 ${
+                      theme === 'light' ? 'bg-white border-slate-200' : 'bg-neutral-900/60 border-neutral-800'
+                    }`}>
+                      <div className={`w-12 h-12 sm:w-14 sm:h-14 rounded-2xl flex items-center justify-center ${
+                        theme === 'light' ? 'bg-amber-100 text-amber-600' : 'bg-amber-500/10 text-amber-400'
+                      }`}>
+                        <ShoppingBag className="w-6 h-6 sm:w-7 sm:h-7" />
+                      </div>
+                      <div>
+                        <h4 className={`text-xs sm:text-sm font-bold ${theme === 'light' ? 'text-slate-900' : 'text-white'}`}>
+                          Your Storefront is Empty
+                        </h4>
+                        <p className={`text-[10px] min-[375px]:text-[11px] sm:text-xs mt-1 max-w-xs mx-auto leading-relaxed ${theme === 'light' ? 'text-slate-500' : 'text-neutral-400'}`}>
+                          Start selling directly to your audience! List physical merchandise, digital presets, beats, or clothing with instant Mobile Money escrow.
+                        </p>
+                      </div>
+                      <button
+                        onClick={() => setIsAddProductOpen(true)}
+                        className="mt-1 flex items-center gap-1.5 py-2 px-4 sm:py-2.5 sm:px-5 rounded-xl bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-400 hover:to-amber-500 text-neutral-950 font-black text-xs shadow-md active:scale-95 transition-all"
+                      >
+                        <Plus className="w-4 h-4" />
+                        <span>+ List Your First Item</span>
+                      </button>
+                    </div>
+                  ) : (
+                    /* Product Grid for Real Products - Responsive for iPhone SE & all screens */
+                    <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-2 sm:gap-3">
+                      {myProducts.map((product) => (
+                        <div
+                          key={product.id}
+                          className={`p-2 min-[360px]:p-2.5 rounded-2xl border flex flex-col justify-between group transition-all relative ${
+                            theme === 'light'
+                              ? 'bg-white border-slate-200 shadow-sm'
+                              : 'bg-neutral-900/80 border-neutral-800'
+                          }`}
+                        >
+                          <div>
+                            <div className="relative aspect-square w-full rounded-xl overflow-hidden mb-1.5 sm:mb-2 bg-neutral-800 border border-neutral-700/30">
+                              <img
+                                src={product.imageUrl || '/default-avatar.jpg'}
+                                alt={product.title}
+                                onError={(e) => {
+                                  (e.currentTarget as HTMLImageElement).src = '/default-avatar.jpg';
+                                }}
+                                className="w-full h-full object-cover group-hover:scale-105 transition-transform"
+                              />
+                              <span className="absolute top-1.5 left-1.5 text-[8px] min-[360px]:text-[9px] font-bold px-1.5 py-0.5 rounded-full bg-black/75 text-amber-300 backdrop-blur-md border border-white/10">
+                                {product.type === 'physical' ? 'Physical' : 'Digital'}
+                              </span>
+
+                              {/* Delete button */}
+                              <button
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  deleteProduct(product.id);
+                                  setShareToast(`"${product.title}" removed from your store.`);
+                                }}
+                                title="Delete item"
+                                className="absolute top-1.5 right-1.5 w-6 h-6 rounded-full bg-black/70 hover:bg-rose-600 text-white flex items-center justify-center transition-colors shadow-md backdrop-blur-sm active:scale-90"
+                              >
+                                <Trash2 className="w-3 h-3 text-rose-300 hover:text-white" />
+                              </button>
+                            </div>
+
+                            <h4 className={`text-[11px] min-[360px]:text-xs font-bold line-clamp-1 ${theme === 'light' ? 'text-slate-900' : 'text-white'}`}>
+                              {product.title}
+                            </h4>
+                            <p className={`text-[9px] min-[360px]:text-[10px] ${theme === 'light' ? 'text-slate-500' : 'text-neutral-400'} truncate mt-0.5`}>
+                              {product.deliveryInfo || 'Dispatched via Ghana Post / Courier'}
+                            </p>
+                          </div>
+
+                          <div className="mt-2 pt-1.5 sm:pt-2 border-t border-neutral-700/20 flex items-center justify-between gap-1">
+                            <span className="text-[11px] min-[360px]:text-xs font-mono font-bold text-amber-500 truncate">
+                              GHS {product.priceGHS.toFixed(2)}
+                            </span>
+                            <button
+                              onClick={() => openProductCheckout(product)}
+                              className="text-[9px] font-bold px-2 py-0.5 rounded-full bg-amber-500/15 hover:bg-amber-500 hover:text-neutral-950 text-amber-500 border border-amber-500/30 transition-colors shrink-0"
+                            >
+                              Preview
+                            </button>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+
+                  {/* My Orders & Escrow Tracking */}
+                  {myOrders.length > 0 && (
+                    <div className={`p-3 min-[360px]:p-4 rounded-2xl border mt-2 sm:mt-3 ${
+                      theme === 'light' ? 'bg-amber-50/70 border-amber-200' : 'bg-neutral-900/90 border-neutral-800'
+                    }`}>
+                      <h4 className={`text-xs font-bold mb-2 sm:mb-2.5 flex items-center gap-1.5 ${
+                        theme === 'light' ? 'text-slate-900' : 'text-white'
+                      }`}>
+                        <ShieldCheck className="w-4 h-4 text-emerald-500 shrink-0" />
+                        <span>My Orders & Escrow Protection</span>
+                      </h4>
+                      <div className="space-y-1.5 sm:space-y-2">
+                        {myOrders.map((ord) => (
+                          <div
+                            key={ord.id}
+                            className={`p-2 min-[360px]:p-2.5 rounded-xl border flex items-center justify-between gap-2 text-xs ${
+                              theme === 'light' ? 'bg-white border-slate-200 text-slate-800' : 'bg-neutral-950 border-neutral-800 text-white'
+                            }`}
+                          >
+                            <div className="min-w-0 flex-1 pr-1">
+                              <div className="font-bold truncate text-[11px] min-[360px]:text-xs">{ord.productTitle}</div>
+                              <div className={`text-[9px] min-[360px]:text-[10px] ${theme === 'light' ? 'text-slate-500' : 'text-neutral-400'} truncate`}>
+                                GHS {ord.amountGHS.toFixed(2)} • @{ord.sellerUsername}
+                              </div>
+                            </div>
+                            {ord.status === 'escrow_locked' ? (
+                              <button
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  confirmDelivery(ord.id);
+                                  setShareToast('Delivery confirmed! Escrow funds released to seller.');
+                                }}
+                                className="px-2 min-[360px]:px-2.5 py-1 rounded-lg bg-emerald-500 hover:bg-emerald-400 text-neutral-950 font-bold text-[9px] min-[360px]:text-[10px] active:scale-95 transition-all shrink-0"
+                              >
+                                Confirm Delivery
+                              </button>
+                            ) : (
+                              <span className="text-[9px] min-[360px]:text-[10px] font-bold text-emerald-500 bg-emerald-500/10 px-2 py-0.5 rounded-full border border-emerald-500/30 shrink-0">
+                                Delivered ✓
+                              </span>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+
               {activeTab === 'saved' && (
                 savedVideos.length > 0 ? (
-                  <div className="grid grid-cols-3 gap-1.5">
+                  <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-5 gap-1.5 sm:gap-2">
                     {savedVideos.map((video) => (
                       <div
                         key={video.id}
@@ -1512,7 +2137,7 @@ export const ProfileScreen: React.FC = () => {
 
               {activeTab === 'liked' && (
                 likedVideos.length > 0 ? (
-                  <div className="grid grid-cols-3 gap-1.5">
+                  <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-5 gap-1.5 sm:gap-2">
                     {likedVideos.map((video) => (
                       <div
                         key={video.id}
@@ -1553,7 +2178,7 @@ export const ProfileScreen: React.FC = () => {
 
               {activeTab === 'unlocked' && (
                 unlockedVideos.length > 0 ? (
-                  <div className="grid grid-cols-3 gap-1.5">
+                  <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-5 gap-1.5 sm:gap-2">
                     {unlockedVideos.map((video) => (
                       <div
                         key={video.id}
@@ -1909,6 +2534,142 @@ export const ProfileScreen: React.FC = () => {
         </div>
       )}
 
+      {/* ADD PRODUCT TO VALUSTORE MODAL - Bottom sheet on mobile/iPhone SE, card modal on tablets */}
+      {isAddProductOpen && (
+        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-md flex items-end sm:items-center justify-center p-0 sm:p-4 animate-fade-in select-none">
+          <form
+            onSubmit={(e) => {
+              e.preventDefault();
+              if (!newProdTitle.trim()) return;
+              const price = parseFloat(newProdPrice);
+              if (isNaN(price) || price <= 0) return;
+
+              addProduct({
+                creatorUsername: currentUser.username,
+                creatorName: currentUser.name,
+                title: newProdTitle.trim(),
+                description: newProdDesc.trim() || 'Available in Ghana',
+                priceGHS: price,
+                imageUrl: newProdImage.trim() || 'https://images.unsplash.com/photo-1523275335684-37898b6baf30?w=500&auto=format&fit=crop&q=60',
+                type: newProdType,
+                inStock: true,
+                category: 'store',
+                deliveryInfo: newProdDelivery.trim(),
+              });
+
+              setShareToast('Product added to ValuStore successfully! 🛍️');
+              setIsAddProductOpen(false);
+              setNewProdTitle('');
+              setNewProdPrice('');
+              setNewProdDesc('');
+            }}
+            className={`w-full max-w-md rounded-t-3xl sm:rounded-3xl p-4 sm:p-5 flex flex-col gap-3 shadow-2xl max-h-[90vh] overflow-y-auto ${
+              theme === 'light' ? 'bg-white border-slate-200 text-slate-900' : 'bg-[#070E1B] border-neutral-800 text-white'
+            } border`}
+          >
+            <div className={`flex items-center justify-between pb-2 border-b ${theme === 'light' ? 'border-slate-200' : 'border-neutral-800'}`}>
+              <div className="flex items-center gap-2">
+                <ShoppingBag className="w-5 h-5 text-amber-500" />
+                <h3 className={`text-sm font-bold ${theme === 'light' ? 'text-slate-900' : 'text-white'}`}>List Item on ValuStore</h3>
+              </div>
+              <button
+                type="button"
+                onClick={() => setIsAddProductOpen(false)}
+                className={`w-7 h-7 rounded-full ${
+                  theme === 'light' ? 'bg-slate-100 border-slate-200 text-slate-500 hover:text-slate-800' : 'bg-neutral-900 border-neutral-800 text-neutral-400 hover:text-white'
+                } border flex items-center justify-center`}
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div>
+              <label className="block text-[11px] font-bold mb-1 text-neutral-400">Product Title *</label>
+              <input
+                type="text"
+                required
+                value={newProdTitle}
+                onChange={(e) => setNewProdTitle(e.target.value)}
+                placeholder="e.g. African Print Jacket, Phone Stand, Beat Pack"
+                className={`w-full p-2.5 rounded-xl text-xs outline-none border ${
+                  theme === 'light' ? 'bg-slate-50 border-slate-300 focus:border-amber-500' : 'bg-neutral-900 border-neutral-800 focus:border-amber-400 text-white'
+                }`}
+              />
+            </div>
+
+            <div className="grid grid-cols-2 gap-2">
+              <div>
+                <label className="block text-[11px] font-bold mb-1 text-neutral-400">Price (GHS) *</label>
+                <input
+                  type="number"
+                  step="0.01"
+                  required
+                  value={newProdPrice}
+                  onChange={(e) => setNewProdPrice(e.target.value)}
+                  placeholder="50.00"
+                  className={`w-full p-2.5 rounded-xl text-xs outline-none border ${
+                    theme === 'light' ? 'bg-slate-50 border-slate-300 focus:border-amber-500' : 'bg-neutral-900 border-neutral-800 focus:border-amber-400 text-white'
+                  }`}
+                />
+              </div>
+
+              <div>
+                <label className="block text-[11px] font-bold mb-1 text-neutral-400">Item Type</label>
+                <select
+                  value={newProdType}
+                  onChange={(e) => setNewProdType(e.target.value as any)}
+                  className={`w-full p-2.5 rounded-xl text-xs outline-none border ${
+                    theme === 'light' ? 'bg-slate-50 border-slate-300 focus:border-amber-500' : 'bg-neutral-900 border-neutral-800 focus:border-amber-400 text-white'
+                  }`}
+                >
+                  <option value="physical">Physical Goods</option>
+                  <option value="digital">Digital Download</option>
+                </select>
+              </div>
+            </div>
+
+            <div>
+              <label className="block text-[11px] font-bold mb-1 text-neutral-400">Delivery Notes / Radius</label>
+              <input
+                type="text"
+                value={newProdDelivery}
+                onChange={(e) => setNewProdDelivery(e.target.value)}
+                placeholder="e.g. Kumasi & Accra express dispatch within 24-48 hours"
+                className={`w-full p-2.5 rounded-xl text-xs outline-none border ${
+                  theme === 'light' ? 'bg-slate-50 border-slate-300 focus:border-amber-500' : 'bg-neutral-900 border-neutral-800 focus:border-amber-400 text-white'
+                }`}
+              />
+            </div>
+
+            <div>
+              <label className="block text-[11px] font-bold mb-1 text-neutral-400">Photo URL (Optional)</label>
+              <input
+                type="url"
+                value={newProdImage}
+                onChange={(e) => setNewProdImage(e.target.value)}
+                placeholder="https://... (defaults to studio product image)"
+                className={`w-full p-2.5 rounded-xl text-xs outline-none border ${
+                  theme === 'light' ? 'bg-slate-50 border-slate-300 focus:border-amber-500' : 'bg-neutral-900 border-neutral-800 focus:border-amber-400 text-white'
+                }`}
+              />
+            </div>
+
+            <div className={`p-2.5 rounded-xl text-[10px] leading-relaxed border ${
+              theme === 'light' ? 'bg-amber-50 border-amber-200 text-amber-900' : 'bg-amber-950/30 border-amber-500/20 text-amber-300'
+            }`}>
+              🔒 4% ValuVid escrow processing fee is deducted upon successful buyer delivery confirmation.
+            </div>
+
+            <button
+              type="submit"
+              className="w-full py-3 rounded-xl bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-400 hover:to-amber-500 text-neutral-950 font-black text-xs shadow-md active:scale-95 transition-all mt-1"
+            >
+              List in ValuStore 🚀
+            </button>
+          </form>
+        </div>
+      )}
+
       {/* MILESTONE CERTIFICATE MODAL */}
       <MilestoneCertificateModal
         certificate={selectedCertificate}
@@ -1922,6 +2683,20 @@ export const ProfileScreen: React.FC = () => {
         onClose={() => setProfileShareOpen(false)}
         user={currentUser}
         onToast={(msg) => setShareToast(msg)}
+      />
+
+      {/* TIKTOK-STYLE FOLLOWERS & FOLLOWING LIST MODAL */}
+      <FollowersListModal
+        isOpen={Boolean(followListTab)}
+        initialTab={followListTab || 'following'}
+        onClose={() => setFollowListTab(null)}
+      />
+
+      {/* VIDEO VIEWERS MODAL */}
+      <VideoViewersModal
+        isOpen={Boolean(viewersModalVideo)}
+        video={viewersModalVideo}
+        onClose={() => setViewersModalVideo(null)}
       />
     </div>
   );

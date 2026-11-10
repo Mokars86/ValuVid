@@ -175,7 +175,20 @@ export const SettingsPage: React.FC = () => {
   // 5. Video Playback & Data Usage
   const [dataSaver, setDataSaver] = useState(initialSettings.dataSaver);
   const [autoplayCellular, setAutoplayCellular] = useState(initialSettings.autoplayCellular);
-  const [cacheSizeMB, setCacheSizeMB] = useState(148.5);
+  const [cacheSizeMB, setCacheSizeMB] = useState<number>(() => {
+    try {
+      let bytes = 0;
+      for (let i = 0; i < localStorage.length; i++) {
+        const k = localStorage.key(i);
+        if (k) {
+          bytes += (localStorage.getItem(k) || '').length * 2;
+        }
+      }
+      return Number(Math.max(0.6, bytes / (1024 * 1024)).toFixed(1));
+    } catch {
+      return 1.2;
+    }
+  });
   const [cacheCleared, setCacheCleared] = useState(false);
 
   // 6. Creator Tools & Permissions
@@ -400,12 +413,14 @@ export const SettingsPage: React.FC = () => {
           <div className="flex flex-col gap-2 pt-1 text-xs">
             <div className="flex items-center justify-between py-1">
               <span className={theme === 'light' ? 'text-slate-500' : 'text-neutral-400'}>Verified Phone (MoMo):</span>
-              <span className={`font-mono font-medium ${theme === 'light' ? 'text-slate-900' : 'text-white'}`}>+233 24 981 7261</span>
+              <span className={`font-mono font-medium ${theme === 'light' ? 'text-slate-900' : 'text-white'}`}>
+                {currentUser.phone || payoutMethods[0]?.accountNumber || localStorage.getItem('valuvid_user_payout_phone') || (currentUser?.username ? 'MoMo Wallet Connected' : 'Not Linked Yet')}
+              </span>
             </div>
             <div className={`flex items-center justify-between py-1 border-t ${theme === 'light' ? 'border-slate-100' : 'border-neutral-900'}`}>
               <span className={theme === 'light' ? 'text-slate-500' : 'text-neutral-400'}>Active Account Email:</span>
               <span className={`font-medium ${theme === 'light' ? 'text-cyan-700' : 'text-cyan-300'} font-mono`}>
-                {currentUser.email || authUser?.email || 'emmanuel@valuvid.app (Demo Mode)'}
+                {currentUser.email || authUser?.email || (currentUser?.username ? `${currentUser.username}@valuvid.app` : 'Guest Session')}
               </span>
             </div>
           </div>
@@ -469,7 +484,13 @@ export const SettingsPage: React.FC = () => {
           <div className={`flex items-center justify-between pt-2 border-t ${theme === 'light' ? 'border-slate-200 text-slate-500' : 'border-neutral-800 text-neutral-400'} text-[11px]`}>
             <div className="flex items-center gap-1.5">
               <Smartphone className="w-3.5 h-3.5 text-cyan-500" />
-              <span>Samsung Galaxy S24 Ultra (Accra, GH)</span>
+              <span>
+                {typeof navigator !== 'undefined' && /Android/i.test(navigator.userAgent)
+                  ? 'Android Mobile Device'
+                  : typeof navigator !== 'undefined' && /iPhone|iPad|iPod/i.test(navigator.userAgent)
+                  ? 'Apple iOS Device'
+                  : 'Active Mobile Device'}
+              </span>
             </div>
             <span className="text-emerald-500 font-bold text-[10px]">Active Now</span>
           </div>
@@ -920,7 +941,9 @@ export const SettingsPage: React.FC = () => {
                       Level 2
                     </span>
                   </div>
-                  <div className={`text-[10px] ${theme === 'light' ? 'text-slate-500' : 'text-neutral-400'} font-mono`}>ID: GHA-729104821-4</div>
+                  <div className={`text-[10px] ${theme === 'light' ? 'text-slate-500' : 'text-neutral-400'} font-mono`}>
+                    ID: VALU-{(currentUser.username || 'CREATOR').toUpperCase()}-KYC
+                  </div>
                 </div>
               </div>
               <span className="text-[9px] bg-emerald-500/20 text-emerald-600 font-bold px-2 py-0.5 rounded-full border border-emerald-500/40">

@@ -14,6 +14,7 @@ import { QRCodeCanvas } from 'qrcode.react';
 import confetti from 'canvas-confetti';
 import { sounds } from '../../utils/soundEffects';
 import { useApp } from '../../context/AppContext';
+import { buildProfileShareUrl } from '../../utils/urlHelper';
 
 interface ProfileShareModalProps {
   isOpen: boolean;
@@ -43,8 +44,9 @@ export const ProfileShareModal: React.FC<ProfileShareModalProps> = ({
 
   const isLight = theme === 'light';
 
-  const profileUrl = `https://valuvid.app/@${user.username}`;
-  const shareText = `Watch my videos and support me on ValuVid: ${profileUrl} 🎬✨`;
+  const cleanUserHandle = user.username.replace(/^@/, '');
+  const profileUrl = buildProfileShareUrl(cleanUserHandle);
+  const shareText = `Watch @${cleanUserHandle}'s vertical videos on ValuVid: ${profileUrl} 🎬✨`;
 
   const handleCopyLink = () => {
     sounds.playLikePop();

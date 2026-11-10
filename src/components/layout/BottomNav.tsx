@@ -26,11 +26,12 @@ export const BottomNav: React.FC = () => {
   ];
 
   return (
-    <nav className={`relative z-40 w-full transition-colors duration-200 ${
+    <nav className={`lg:hidden relative z-40 w-full transition-colors duration-200 ${
       isLightNav 
         ? 'bg-white border-t border-slate-200 shadow-[0_-4px_20px_rgba(0,0,0,0.06)]' 
         : 'bg-black border-t border-neutral-900 shadow-[0_-8px_25px_rgba(0,0,0,0.8)]'
-    } px-1 sm:px-3 py-2 sm:py-2.5 pb-[max(0.6rem,env(safe-area-inset-bottom,0px))] flex items-center justify-around select-none`}>
+    } px-1 sm:px-4 py-2 sm:py-2.5 pb-[max(0.6rem,env(safe-area-inset-bottom,0px))] flex items-center justify-around select-none`}>
+      <div className="w-full max-w-md sm:max-w-xl md:max-w-2xl mx-auto flex items-center justify-around">
       {navItems.map((item) => {
         const Icon = item.icon;
         const isActive = activeTab === item.id;
@@ -158,6 +159,7 @@ export const BottomNav: React.FC = () => {
           </button>
         );
       })}
+      </div>
     </nav>
   );
 };

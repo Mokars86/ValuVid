@@ -38,7 +38,8 @@ export const ValuWallet: React.FC = () => {
     fundingMetrics,
     isSupabaseConnected,
     currentUser,
-    cashoutLimitInfo
+    cashoutLimitInfo,
+    setShareToast
   } = useApp();
 
   const [activeFilter, setActiveFilter] = useState<'all' | 'tips' | 'rewards' | 'cashouts'>('all');
@@ -109,13 +110,18 @@ export const ValuWallet: React.FC = () => {
       name,
       accountNumber: formattedAccount,
       accountHolder: accountHolder.trim() || currentUser.name || 'ValuVid Creator',
-      isDefault: payoutMethods.length === 0,
+      isDefault: true,
       iconType: newMethodType === 'bank' ? 'bank' : 'momo',
     });
+
+    try {
+      localStorage.setItem('valuvid_user_payout_phone', formattedAccount);
+    } catch {}
 
     setAccountNumber('');
     setBankBranch('');
     setAddMethodModalOpen(false);
+    setShareToast('Payout channel saved as primary! 💳');
   };
 
   return (
@@ -501,11 +507,26 @@ export const ValuWallet: React.FC = () => {
                       >
                         {isPositive ? `+GHS ${tx.amountGHS.toFixed(2)}` : `-GHS ${Math.abs(tx.amountGHS).toFixed(2)}`}
                       </div>
-                      <span className={`text-[9px] font-semibold ${
-                        theme === 'light' ? 'text-emerald-700 bg-emerald-50' : 'text-emerald-400/90 bg-emerald-950/60'
-                      } px-1.5 py-0.2 rounded inline-block`}>
-                        Completed
-                      </span>
+                      {tx.status === 'pending' || tx.status === 'processing' ? (
+                        <span className={`text-[9px] font-bold ${
+                          theme === 'light' ? 'text-amber-800 bg-amber-50 border border-amber-200' : 'text-amber-300 bg-amber-500/20 border border-amber-500/30'
+                        } px-2 py-0.5 rounded-full inline-flex items-center gap-1`}>
+                          <span className="w-1.5 h-1.5 rounded-full bg-amber-500 animate-pulse" />
+                          <span>Pending (24-48h)</span>
+                        </span>
+                      ) : tx.status === 'failed' ? (
+                        <span className={`text-[9px] font-bold ${
+                          theme === 'light' ? 'text-rose-700 bg-rose-50 border border-rose-200' : 'text-rose-300 bg-rose-500/20 border border-rose-500/30'
+                        } px-1.5 py-0.5 rounded-full inline-block`}>
+                          Failed
+                        </span>
+                      ) : (
+                        <span className={`text-[9px] font-semibold ${
+                          theme === 'light' ? 'text-emerald-700 bg-emerald-50' : 'text-emerald-400/90 bg-emerald-950/60'
+                        } px-1.5 py-0.2 rounded inline-block`}>
+                          Completed
+                        </span>
+                      )}
                     </div>
                   </div>
                 );
