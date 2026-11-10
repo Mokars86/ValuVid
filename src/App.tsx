@@ -37,6 +37,7 @@ const AppContent: React.FC = () => {
   const { 
     activeTab, 
     setActiveTab,
+    isCinemaMode,
     authModalOpen,
     setAuthModalOpen,
     showSettings,
@@ -445,7 +446,7 @@ const AppContent: React.FC = () => {
       </div>
 
       {/* Bottom Navigation */}
-      <BottomNav />
+      {!isCinemaMode && <BottomNav />}
 
       {/* Overlays & Modals */}
       <QuickTipModal />

@@ -168,6 +168,8 @@ interface AppContextType {
   setShowWinPoolModal: (show: boolean) => void;
   showSettings: boolean;
   setShowSettings: (show: boolean) => void;
+  isCinemaMode: boolean;
+  setIsCinemaMode: (val: boolean) => void;
   isProMember: boolean;
   subscribePro: (tierName: string, priceGHS: number) => boolean;
   sponsorBounty: (title: string, sponsorName: string, poolGHS: number, category: string, paystackRef?: string, durationDays?: number) => void;
@@ -1266,6 +1268,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const [showSponsorModal, setShowSponsorModal] = useState(false);
   const [showWinPoolModal, setShowWinPoolModal] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
+  const [isCinemaMode, setIsCinemaMode] = useState(false);
   const [isProMember, setIsProMember] = useState<boolean>(() => {
     try {
       return localStorage.getItem('valuvid_is_pro_member') === 'true';
@@ -1318,7 +1321,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     let listenerHandle: any = null;
     try {
       CapApp.addListener('backButton', () => {
-        if (commentDrawerVideo) {
+        if (isCinemaMode) {
+          setIsCinemaMode(false);
+        } else if (commentDrawerVideo) {
           setCommentDrawerVideo(null);
         } else if (tipModalVideo) {
           setTipModalVideo(null);
@@ -1386,6 +1391,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     showWinPoolModal,
     showSponsorModal,
     showSettings,
+        isCinemaMode,
+        setIsCinemaMode,
     unlockPromptVideo,
     analyticsVideo,
     shareModalVideo,
@@ -2845,6 +2852,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         showWinPoolModal,
         setShowWinPoolModal,
         showSettings,
+        isCinemaMode,
+        setIsCinemaMode,
         setShowSettings,
         isProMember,
         subscribePro,

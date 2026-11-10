@@ -76,7 +76,8 @@ export const FeedScreen: React.FC = () => {
     setDiscoverSearchQuery,
     currentUser,
     openProductCheckout,
-    openCreatorProfile
+    openCreatorProfile,
+    isCinemaMode
   } = useApp();
 
   const [slideDirection, setSlideDirection] = useState<'up' | 'down' | null>(null);
@@ -487,7 +488,7 @@ export const FeedScreen: React.FC = () => {
       </div>
 
       {/* CLEAN FULLSCREEN INDICATOR TOAST */}
-      {isCleanScreen && (
+      {isCleanScreen && !isCinemaMode && (
         <div className="absolute top-8 sm:top-5 left-1/2 -translate-x-1/2 z-30 pointer-events-none animate-fade-in flex items-center gap-1.5 bg-black/75 backdrop-blur-md border border-white/20 text-white/90 text-[10px] font-semibold px-3.5 py-1.5 rounded-full shadow-2xl">
           <Eye className="w-3.5 h-3.5 text-cyan-400 animate-pulse" />
           <span>Clean Fullscreen • Tap anywhere to restore buttons</span>
@@ -533,7 +534,7 @@ export const FeedScreen: React.FC = () => {
 
       {/* TOP HEADER BAR (Clean, Centered, Following | For You | Fresh Creators) */}
       <header className={`relative z-20 w-full pt-8 sm:pt-5 pb-2 px-3 sm:px-4 transition-all duration-300 flex items-center justify-center ${
-        isCleanScreen ? 'opacity-0 -translate-y-6 pointer-events-none' : 'opacity-100 translate-y-0'
+        (isCleanScreen || isCinemaMode) ? 'opacity-0 -translate-y-6 pointer-events-none' : 'opacity-100 translate-y-0'
       }`}>
         <div className="flex items-center justify-center gap-3 sm:gap-5">
           <button
@@ -574,7 +575,7 @@ export const FeedScreen: React.FC = () => {
 
       {/* RIGHT ACTION SIDEBAR (Hidden in Clean Fullscreen Mode) */}
       <aside className={`absolute right-2.5 min-[380px]:right-3 bottom-14 min-[380px]:bottom-20 z-20 flex flex-col items-center gap-2 min-[380px]:gap-3.5 transition-all duration-300 ${
-        isCleanScreen ? 'opacity-0 translate-x-6 pointer-events-none' : 'opacity-100 translate-x-0'
+        (isCleanScreen || isCinemaMode) ? 'opacity-0 translate-x-6 pointer-events-none' : 'opacity-100 translate-x-0'
       }`}>
         {/* Creator Avatar & TikTok-Style Follow Button */}
         <div className="relative group mb-0.5">
@@ -699,7 +700,7 @@ export const FeedScreen: React.FC = () => {
 
       {/* BOTTOM OVERLAY (Hidden in Clean Fullscreen Mode) */}
       <footer className={`relative z-20 w-full px-3 min-[380px]:px-4 pb-2.5 min-[380px]:pb-3 flex flex-col gap-1.5 min-[380px]:gap-2 transition-all duration-300 ${
-        isCleanScreen ? 'opacity-0 translate-y-6 pointer-events-none' : 'opacity-100 translate-y-0'
+        (isCleanScreen || isCinemaMode) ? 'opacity-0 translate-y-6 pointer-events-none' : 'opacity-100 translate-y-0'
       }`}>
         {/* Sleek Mini Watch Progress Pill (Ultra-compact, 70% less space) */}
         <div 

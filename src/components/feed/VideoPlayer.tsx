@@ -21,7 +21,7 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
   isCleanScreen = false,
   onToggleCleanScreen
 }) => {
-  const { isFeedMuted, setIsFeedMuted } = useApp();
+  const { isFeedMuted, setIsFeedMuted, isCinemaMode, setIsCinemaMode } = useApp();
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const bgAudioRef = useRef<HTMLAudioElement | null>(null);
   const [isPlaying, setIsPlaying] = useState(true);
@@ -40,11 +40,46 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
     }
     return false;
   });
-  const [isTheaterFullscreen, setIsTheaterFullscreen] = useState(false);
   const [playbackProgress, setPlaybackProgress] = useState(0);
+  const [currentTimeSec, setCurrentTimeSec] = useState(0);
+  const [durationSec, setDurationSec] = useState(0);
+  const [showControls, setShowControls] = useState(true);
+  const controlsTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [isScreenPortrait, setIsScreenPortrait] = useState(() => 
     typeof window !== 'undefined' ? window.innerHeight > window.innerWidth : true
   );
+
+  const resetControlsTimer = useCallback(() => {
+    setShowControls(true);
+    if (controlsTimerRef.current) {
+      clearTimeout(controlsTimerRef.current);
+    }
+    if (isPlaying) {
+      controlsTimerRef.current = setTimeout(() => {
+        setShowControls(false);
+      }, 3000);
+    }
+  }, [isPlaying]);
+
+  useEffect(() => {
+    if (isCinemaMode && isActive) {
+      resetControlsTimer();
+    } else {
+      setShowControls(true);
+      if (controlsTimerRef.current) {
+        clearTimeout(controlsTimerRef.current);
+      }
+    }
+    return () => {
+      if (controlsTimerRef.current) clearTimeout(controlsTimerRef.current);
+    };
+  }, [isCinemaMode, isActive, resetControlsTimer]);
+
+  useEffect(() => {
+    if (!isActive && isCinemaMode) {
+      setIsCinemaMode(false);
+    }
+  }, [isActive, isCinemaMode, setIsCinemaMode]);
 
   useEffect(() => {
     const handleResize = () => {
@@ -58,20 +93,20 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
     };
   }, []);
 
-  // Native phone back button listener to exit Theater Mode immediately
+  // Native phone back button listener to exit Cinema Mode immediately
   useEffect(() => {
-    if (!isTheaterFullscreen) return;
+    if (!isCinemaMode) return;
     let listenerHandle: any = null;
     try {
       CapApp.addListener('backButton', () => {
-        setIsTheaterFullscreen(false);
+        setIsCinemaMode(false);
       }).then((handle) => {
         listenerHandle = handle;
       });
     } catch {}
 
     const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') setIsTheaterFullscreen(false);
+      if (e.key === 'Escape') setIsCinemaMode(false);
     };
     window.addEventListener('keydown', handleKeyDown);
 
@@ -81,7 +116,7 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
       }
       window.removeEventListener('keydown', handleKeyDown);
     };
-  }, [isTheaterFullscreen]);
+  }, [isCinemaMode, setIsCinemaMode]);
 
   // Instant hardware playback: set source synchronously, then check local blob cache in background
   useEffect(() => {
@@ -212,6 +247,15 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
 
     setLastTapTime(now);
 
+    // If in Cinema Mode and controls are currently hidden, single tap reveals them without pausing
+    if (isCinemaMode && isActive) {
+      if (!showControls) {
+        resetControlsTimer();
+        return;
+      }
+      resetControlsTimer();
+    }
+
     // If in Clean Screen mode, tap restores UI
     if (isCleanScreen) {
       if (onToggleCleanScreen) {
@@ -247,6 +291,26 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
     }
   };
 
+  const handleScrub = (e: React.MouseEvent<HTMLDivElement>) => {
+    e.stopPropagation();
+    resetControlsTimer();
+    const rect = e.currentTarget.getBoundingClientRect();
+    let ratio = 0;
+    if (isScreenPortrait) {
+      // Rotated 90deg clockwise: local horizontal axis maps to screen Y (top to bottom)
+      ratio = (e.clientY - rect.top) / rect.height;
+    } else {
+      ratio = (e.clientX - rect.left) / rect.width;
+    }
+    ratio = Math.max(0, Math.min(1, ratio));
+    if (videoRef.current && videoRef.current.duration) {
+      const nextTime = ratio * videoRef.current.duration;
+      videoRef.current.currentTime = nextTime;
+      setPlaybackProgress(ratio * 100);
+      setCurrentTimeSec(nextTime);
+    }
+  };
+
   const toggleMute = (e: React.MouseEvent) => {
     e.stopPropagation();
     const nextMuted = !isFeedMuted;
@@ -269,7 +333,7 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
       onClick={handleContainerClick}
       style={{ touchAction: 'none' }}
       className={`overflow-hidden flex items-center justify-center cursor-pointer select-none touch-none ${
-        isTheaterFullscreen
+        (isCinemaMode && isActive)
           ? 'fixed inset-0 z-50 bg-black w-screen h-screen'
           : 'relative w-full h-full bg-black'
       }`}
@@ -280,7 +344,7 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
           src={video.thumbnailUrl}
           alt={video.title}
           className={`absolute transition-all duration-300 pointer-events-none select-none z-1 ${
-            isTheaterFullscreen
+            (isCinemaMode && isActive)
               ? (isScreenPortrait ? 'w-[100vh] h-[100vw] object-contain rotate-90 max-w-none max-h-none' : 'w-full h-full object-contain')
               : (isLandscape ? 'w-full h-full object-contain' : 'w-full h-full object-cover')
           } ${
@@ -291,7 +355,7 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
       )}
 
       {/* Ambient Glow Backdrop for Horizontal Landscape Videos */}
-      {isLandscape && !isTheaterFullscreen && video.thumbnailUrl && (
+      {isLandscape && !(isCinemaMode && isActive) && video.thumbnailUrl && (
         <div 
           className="absolute inset-0 bg-cover bg-center filter blur-2xl opacity-40 scale-125 pointer-events-none select-none"
           style={{ backgroundImage: `url(${video.thumbnailUrl})` }}
@@ -317,6 +381,7 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
               if (w && h && w > h * 1.05) {
                 setIsLandscape(true);
               }
+              setDurationSec(videoRef.current.duration || 0);
             }
             if (isActive && videoRef.current && videoRef.current.paused) {
               videoRef.current.play().catch((err) => {
@@ -329,10 +394,12 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
             }
           }}
           onTimeUpdate={() => {
-            if (videoRef.current && isTheaterFullscreen) {
+            if (videoRef.current) {
               const cur = videoRef.current.currentTime;
               const dur = videoRef.current.duration || 1;
               setPlaybackProgress((cur / dur) * 100);
+              setCurrentTimeSec(cur);
+              setDurationSec(videoRef.current.duration || 0);
             }
           }}
           onLoadedData={() => {
@@ -377,7 +444,7 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
           }}
           onError={handleVideoError}
           className={`pointer-events-none transition-all duration-300 z-2 ${
-            isTheaterFullscreen
+            (isCinemaMode && isActive)
               ? (isScreenPortrait ? 'w-[100vh] h-[100vw] object-contain rotate-90 max-w-none max-h-none' : 'w-full h-full object-contain')
               : (isLandscape ? 'w-full h-full object-contain' : 'w-full h-full object-cover')
           }`}
@@ -443,7 +510,7 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
       )}
 
       {/* Volume toggle button in corner */}
-      {!isTheaterFullscreen && (
+      {!(isCinemaMode && isActive) && (
         <button
           onClick={toggleMute}
           aria-label="Toggle mute"
@@ -454,12 +521,12 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
       )}
 
       {/* Horizontal Landscape Cinema Mode Button */}
-      {isLandscape && !isTheaterFullscreen && !isCleanScreen && (
+      {isLandscape && !(isCinemaMode && isActive) && !isCleanScreen && (
         <button
           type="button"
           onClick={(e) => {
             e.stopPropagation();
-            setIsTheaterFullscreen(true);
+            setIsCinemaMode(true);
             sounds.playLikePop();
           }}
           className="absolute top-28 right-4 z-20 flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-black/60 hover:bg-black/80 backdrop-blur-md border border-white/25 text-white shadow-xl active:scale-95 transition-all text-xs font-bold"
@@ -470,42 +537,61 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
         </button>
       )}
 
-      {/* Fullscreen Landscape Theater Mode Overlay */}
-      {isTheaterFullscreen && (
+      {/* Fullscreen Landscape Cinema Mode Overlay */}
+      {isCinemaMode && isActive && (
         <div 
-          onClick={(e) => e.stopPropagation()}
-          className={`absolute inset-0 z-30 flex flex-col justify-between select-none pointer-events-none ${
+          className={`absolute inset-0 z-30 select-none flex flex-col justify-between pointer-events-none transition-opacity duration-300 ${
+            showControls ? 'opacity-100' : 'opacity-0'
+          } ${
             isScreenPortrait
-              ? 'w-[100vh] h-[100vw] rotate-90 origin-center p-4'
-              : 'w-full h-full p-4 sm:p-6'
+              ? 'w-[100vh] h-[100vw] rotate-90 origin-center p-3 sm:p-5'
+              : 'w-full h-full p-3 sm:p-5'
           }`}
         >
-          {/* Top Bar with Title, Handle & Exit Button */}
+          {/* Top Bar: Back/Close, Title, Creator, Duration, Mute & Exit */}
           <div className="flex items-center justify-between z-20 pointer-events-auto bg-gradient-to-b from-black/80 via-black/40 to-transparent p-2.5 rounded-2xl backdrop-blur-xs">
             <div className="flex items-center gap-2.5 min-w-0">
               <button
                 type="button"
-                onClick={() => setIsTheaterFullscreen(false)}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setIsCinemaMode(false);
+                }}
                 className="w-9 h-9 rounded-full bg-neutral-900/90 hover:bg-neutral-800 text-white flex items-center justify-center border border-white/20 active:scale-95 transition-transform shrink-0"
+                aria-label="Exit rotate view"
               >
                 <X className="w-5 h-5" />
               </button>
               <div className="min-w-0">
-                <h3 className="text-sm font-bold text-white truncate drop-shadow">{video.title}</h3>
-                <p className="text-[11px] text-amber-400 font-mono">@{video.creator?.username} • 16:9 Landscape</p>
+                <h3 className="text-sm font-bold text-white truncate drop-shadow max-w-[200px] sm:max-w-xs">{video.title}</h3>
+                <div className="flex items-center gap-1.5 text-[11px] font-mono">
+                  <span className="text-amber-400">@{video.creator?.username}</span>
+                  <span className="text-white/40">•</span>
+                  <span className="text-neutral-200 font-bold bg-white/10 px-1.5 py-0.5 rounded">
+                    {Math.floor(currentTimeSec)}s / {Math.floor(durationSec)}s
+                  </span>
+                </div>
               </div>
             </div>
             <div className="flex items-center gap-2 shrink-0">
               <button
                 type="button"
-                onClick={toggleMute}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  resetControlsTimer();
+                  toggleMute(e);
+                }}
                 className="w-9 h-9 rounded-full bg-neutral-900/90 text-white flex items-center justify-center border border-white/20 active:scale-95 transition-transform"
+                aria-label={isFeedMuted ? 'Unmute' : 'Mute'}
               >
                 {isFeedMuted ? <VolumeX className="w-4 h-4 text-rose-400" /> : <Volume2 className="w-4 h-4 text-white" />}
               </button>
               <button
                 type="button"
-                onClick={() => setIsTheaterFullscreen(false)}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setIsCinemaMode(false);
+                }}
                 className="px-3 py-1.5 rounded-xl bg-neutral-900/90 hover:bg-neutral-800 text-xs font-bold text-white border border-white/20 flex items-center gap-1.5 active:scale-95 transition-transform"
               >
                 <Minimize2 className="w-3.5 h-3.5 text-amber-400" />
@@ -514,77 +600,44 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
             </div>
           </div>
 
-          {/* Interactive Tap Zone to Play / Pause in Fullscreen */}
-          <div 
-            onClick={() => {
-              const vid = videoRef.current;
-              if (vid) {
-                if (vid.paused) {
-                  vid.play().catch(() => {});
-                  setIsPlaying(true);
-                } else {
-                  vid.pause();
-                  setIsPlaying(false);
-                }
-              }
-            }}
-            className="flex-1 w-full flex items-center justify-center cursor-pointer pointer-events-auto my-2"
-          >
+          {/* Center Play/Pause Indicator (Only visible if paused) */}
+          <div className="flex-1 w-full flex items-center justify-center pointer-events-none">
             {!isPlaying && (
-              <div className="w-16 h-16 rounded-full bg-white/20 backdrop-blur-md flex items-center justify-center border border-white/40 shadow-xl pointer-events-none">
+              <div 
+                className="w-16 h-16 rounded-full bg-black/60 backdrop-blur-md flex items-center justify-center border border-white/30 shadow-2xl animate-fade-in pointer-events-auto cursor-pointer active:scale-95 transition-transform"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  if (videoRef.current) {
+                    videoRef.current.play().catch(() => {});
+                    setIsPlaying(true);
+                  }
+                  resetControlsTimer();
+                }}
+              >
                 <Play className="w-8 h-8 text-white ml-1 fill-white" />
               </div>
             )}
           </div>
 
-          {/* Bottom Control Bar */}
-          <div className="flex flex-col gap-2 z-20 bg-neutral-950/85 backdrop-blur-md p-3 sm:p-4 rounded-2xl border border-neutral-800 pointer-events-auto">
+          {/* Bottom Edge-Pinned Slim Duration Bar (YouTube/TikTok Style - NO blocking dark card) */}
+          <div className="w-full z-20 pointer-events-auto pb-1 pt-3">
             <div 
-              onClick={(e) => {
-                const rect = e.currentTarget.getBoundingClientRect();
-                const clickX = e.clientX - rect.left;
-                const ratio = Math.max(0, Math.min(1, clickX / rect.width));
-                if (videoRef.current && videoRef.current.duration) {
-                  videoRef.current.currentTime = ratio * videoRef.current.duration;
-                }
-              }}
-              className="w-full bg-neutral-800 h-2 rounded-full overflow-hidden cursor-pointer"
+              onClick={handleScrub}
+              className="w-full py-2 cursor-pointer group flex items-center"
             >
-              <div 
-                className="h-full bg-gradient-to-r from-amber-500 to-amber-400 rounded-full transition-all duration-150"
-                style={{ width: `${playbackProgress}%` }}
-              />
-            </div>
-            <div className="flex items-center justify-between text-xs text-neutral-300 pt-0.5">
-              <button
-                type="button"
-                onClick={() => {
-                  const vid = videoRef.current;
-                  if (vid) {
-                    if (vid.paused) {
-                      vid.play().catch(() => {});
-                      setIsPlaying(true);
-                    } else {
-                      vid.pause();
-                      setIsPlaying(false);
-                    }
-                  }
-                }}
-                className="text-white hover:text-amber-400 font-bold flex items-center gap-1.5"
-              >
-                {isPlaying ? <Pause className="w-4 h-4 text-amber-400" /> : <Play className="w-4 h-4 fill-white text-white" />}
-                <span>{isPlaying ? 'Pause' : 'Play'}</span>
-              </button>
-              <span className="text-[11px] text-neutral-400 font-mono">
-                {videoRef.current ? Math.floor(videoRef.current.currentTime) : 0}s / {videoRef.current ? Math.floor(videoRef.current.duration || 0) : 0}s
-              </span>
+              <div className="w-full bg-white/25 hover:bg-white/35 h-1 sm:h-1.5 rounded-full overflow-hidden transition-all duration-150 backdrop-blur-xs">
+                <div 
+                  className="h-full bg-gradient-to-r from-amber-500 to-amber-300 rounded-full transition-all duration-100 shadow-[0_0_8px_rgba(251,191,36,0.8)]"
+                  style={{ width: `${playbackProgress}%` }}
+                />
+              </div>
             </div>
           </div>
         </div>
       )}
 
       {/* Video vignette / gradient overlay for readable texts in normal vertical feed */}
-      {!isTheaterFullscreen && (
+      {!(isCinemaMode && isActive) && (
         <>
           <div className="absolute inset-x-0 bottom-0 h-44 bg-gradient-to-t from-black/90 via-black/40 to-transparent pointer-events-none z-10" />
           <div className="absolute inset-x-0 top-0 h-28 bg-gradient-to-b from-black/80 via-black/20 to-transparent pointer-events-none z-10" />
