@@ -291,16 +291,28 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
     }
   };
 
-  const handleScrub = (e: React.MouseEvent<HTMLDivElement>) => {
-    e.stopPropagation();
+  const formatDisplayTime = (current: number, total: number) => {
+    const cur = Math.max(0, Math.floor(current || 0));
+    const tot = Math.max(0, Math.floor(total || 0));
+    if (tot < 60) {
+      return `${cur}s / ${tot}s`;
+    }
+    const curM = Math.floor(cur / 60);
+    const curS = cur % 60;
+    const totM = Math.floor(tot / 60);
+    const totS = tot % 60;
+    return `${curM}:${curS < 10 ? '0' : ''}${curS} / ${totM}:${totS < 10 ? '0' : ''}${totS}`;
+  };
+
+  const handleScrubAtCoord = (clientX: number, clientY: number, barElement: HTMLDivElement, isRotated: boolean) => {
     resetControlsTimer();
-    const rect = e.currentTarget.getBoundingClientRect();
+    const rect = barElement.getBoundingClientRect();
     let ratio = 0;
-    if (isScreenPortrait) {
+    if (isRotated) {
       // Rotated 90deg clockwise: local horizontal axis maps to screen Y (top to bottom)
-      ratio = (e.clientY - rect.top) / rect.height;
+      ratio = (clientY - rect.top) / rect.height;
     } else {
-      ratio = (e.clientX - rect.left) / rect.width;
+      ratio = (clientX - rect.left) / rect.width;
     }
     ratio = Math.max(0, Math.min(1, ratio));
     if (videoRef.current && videoRef.current.duration) {
@@ -309,6 +321,20 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
       setPlaybackProgress(ratio * 100);
       setCurrentTimeSec(nextTime);
     }
+  };
+
+  const handleScrubEvent = (e: React.MouseEvent<HTMLDivElement> | React.TouchEvent<HTMLDivElement>, isRotated: boolean) => {
+    e.stopPropagation();
+    const bar = e.currentTarget;
+    if ('touches' in e && e.touches.length > 0) {
+      handleScrubAtCoord(e.touches[0].clientX, e.touches[0].clientY, bar, isRotated);
+    } else if ('clientX' in e) {
+      handleScrubAtCoord(e.clientX, e.clientY, bar, isRotated);
+    }
+  };
+
+  const handleScrub = (e: React.MouseEvent<HTMLDivElement>) => {
+    handleScrubEvent(e, isScreenPortrait);
   };
 
   const toggleMute = (e: React.MouseEvent) => {
@@ -540,15 +566,15 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
       {/* Fullscreen Landscape Cinema Mode Overlay */}
       {isCinemaMode && isActive && (
         <div 
-          className={`absolute inset-0 z-30 select-none flex flex-col justify-between pointer-events-none transition-opacity duration-300 ${
+          className={`select-none flex flex-col justify-between pointer-events-none transition-opacity duration-300 ${
             showControls ? 'opacity-100' : 'opacity-0'
           } ${
             isScreenPortrait
-              ? 'w-[100vh] h-[100vw] rotate-90 origin-center p-3 sm:p-5'
-              : 'w-full h-full p-3 sm:p-5'
-          }`}
+              ? 'absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 w-[100vh] h-[100vw] rotate-90 origin-center p-3 sm:p-5'
+              : 'absolute inset-0 w-full h-full p-3 sm:p-5'
+          } z-30`}
         >
-          {/* Top Bar: Back/Close, Title, Creator, Duration, Mute & Exit */}
+          {/* Top Bar: Back/Close, Title, Creator, Mute & Exit */}
           <div className="flex items-center justify-between z-20 pointer-events-auto bg-gradient-to-b from-black/80 via-black/40 to-transparent p-2.5 rounded-2xl backdrop-blur-xs">
             <div className="flex items-center gap-2.5 min-w-0">
               <button
@@ -564,13 +590,7 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
               </button>
               <div className="min-w-0">
                 <h3 className="text-sm font-bold text-white truncate drop-shadow max-w-[200px] sm:max-w-xs">{video.title}</h3>
-                <div className="flex items-center gap-1.5 text-[11px] font-mono">
-                  <span className="text-amber-400">@{video.creator?.username}</span>
-                  <span className="text-white/40">•</span>
-                  <span className="text-neutral-200 font-bold bg-white/10 px-1.5 py-0.5 rounded">
-                    {Math.floor(currentTimeSec)}s / {Math.floor(durationSec)}s
-                  </span>
-                </div>
+                <p className="text-[11px] text-amber-400 font-mono truncate">@{video.creator?.username} • 16:9 Landscape</p>
               </div>
             </div>
             <div className="flex items-center gap-2 shrink-0">
@@ -619,18 +639,52 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
             )}
           </div>
 
-          {/* Bottom Edge-Pinned Slim Duration Bar (YouTube/TikTok Style - NO blocking dark card) */}
-          <div className="w-full z-20 pointer-events-auto pb-1 pt-3">
+          {/* Bottom Duration & Progress Bar (Inside Video Screen at the Bottom - Auto-hiding, Non-blocking) */}
+          <div className="w-full z-20 pointer-events-auto pb-1 pt-2">
+            <div className="flex items-center justify-between text-[10px] font-mono text-neutral-300 mb-0.5 px-0.5">
+              <span className="text-[10px] text-amber-300 font-bold bg-black/60 px-2 py-0.5 rounded backdrop-blur-xs border border-white/10 shadow-sm">
+                {formatDisplayTime(currentTimeSec, durationSec)}
+              </span>
+            </div>
             <div 
-              onClick={handleScrub}
-              className="w-full py-2 cursor-pointer group flex items-center"
+              onClick={(e) => handleScrubEvent(e, isScreenPortrait)}
+              onTouchStart={(e) => handleScrubEvent(e, isScreenPortrait)}
+              onTouchMove={(e) => handleScrubEvent(e, isScreenPortrait)}
+              className="w-full py-1.5 cursor-pointer group flex items-center"
             >
-              <div className="w-full bg-white/25 hover:bg-white/35 h-1 sm:h-1.5 rounded-full overflow-hidden transition-all duration-150 backdrop-blur-xs">
+              <div className="relative w-full bg-white/25 hover:bg-white/35 h-1 sm:h-1.5 group-hover:h-2 rounded-full overflow-hidden transition-all duration-150 backdrop-blur-xs">
                 <div 
                   className="h-full bg-gradient-to-r from-amber-500 to-amber-300 rounded-full transition-all duration-100 shadow-[0_0_8px_rgba(251,191,36,0.8)]"
                   style={{ width: `${playbackProgress}%` }}
                 />
               </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Vertical View: Sleek In-Screen Bottom Duration Bar */}
+      {!(isCinemaMode && isActive) && (
+        <div 
+          className="absolute bottom-0 inset-x-0 z-30 pointer-events-auto select-none px-3 pb-1 pt-1"
+          onClick={(e) => e.stopPropagation()}
+        >
+          <div className="flex items-center justify-end text-[10px] font-mono text-neutral-300 mb-0.5 px-0.5">
+            <span className="text-[9px] text-amber-300 font-bold bg-black/60 px-1.5 py-0.5 rounded backdrop-blur-xs border border-white/10 shadow-sm">
+              {formatDisplayTime(currentTimeSec, durationSec)}
+            </span>
+          </div>
+          <div 
+            onClick={(e) => handleScrubEvent(e, false)}
+            onTouchStart={(e) => handleScrubEvent(e, false)}
+            onTouchMove={(e) => handleScrubEvent(e, false)}
+            className="w-full py-1 cursor-pointer group flex items-center"
+          >
+            <div className="relative w-full bg-white/25 hover:bg-white/35 h-1 group-hover:h-1.5 rounded-full overflow-hidden transition-all duration-150 backdrop-blur-xs">
+              <div 
+                className="h-full bg-gradient-to-r from-amber-500 to-amber-300 rounded-full transition-all duration-100 shadow-[0_0_8px_rgba(251,191,36,0.8)]"
+                style={{ width: `${playbackProgress}%` }}
+              />
             </div>
           </div>
         </div>

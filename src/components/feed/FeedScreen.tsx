@@ -473,7 +473,7 @@ export const FeedScreen: React.FC = () => {
       {/* 9:16 Video Player Container with vertical slide transition */}
       <div 
         key={currentVideo.id}
-        className={`absolute inset-0 z-0 ${
+        className={`absolute inset-0 z-10 ${
           slideDirection === 'up' ? 'animate-slide-up' : slideDirection === 'down' ? 'animate-slide-down' : ''
         }`}
         onAnimationEnd={() => setSlideDirection(null)}
@@ -699,13 +699,13 @@ export const FeedScreen: React.FC = () => {
       </aside>
 
       {/* BOTTOM OVERLAY (Hidden in Clean Fullscreen Mode) */}
-      <footer className={`relative z-20 w-full px-3 min-[380px]:px-4 pb-2.5 min-[380px]:pb-3 flex flex-col gap-1.5 min-[380px]:gap-2 transition-all duration-300 ${
-        (isCleanScreen || isCinemaMode) ? 'opacity-0 translate-y-6 pointer-events-none' : 'opacity-100 translate-y-0'
+      <footer className={`relative z-20 w-full px-3 min-[380px]:px-4 pb-6 min-[380px]:pb-7 flex flex-col gap-1.5 min-[380px]:gap-2 transition-all duration-300 pointer-events-none ${
+        (isCleanScreen || isCinemaMode) ? 'opacity-0 translate-y-6' : 'opacity-100 translate-y-0'
       }`}>
         {/* Sleek Mini Watch Progress Pill (Ultra-compact, 70% less space) */}
         <div 
           onClick={() => setShowFundingModal(true)}
-          className={`self-start flex items-center gap-1.5 backdrop-blur-md rounded-full px-2.5 py-1 cursor-pointer shadow-md transition-all active:scale-95 group ${
+          className={`self-start flex items-center gap-1.5 backdrop-blur-md rounded-full px-2.5 py-1 cursor-pointer shadow-md transition-all active:scale-95 group pointer-events-auto ${
             isCurrentRewarded 
               ? 'bg-emerald-950/70 border border-emerald-500/40 text-emerald-400' 
               : 'bg-black/50 border border-amber-400/40 text-amber-300'
@@ -761,7 +761,7 @@ export const FeedScreen: React.FC = () => {
         )}
 
         {/* Creator Info & Caption */}
-        <div className="pr-14 min-[380px]:pr-16 max-w-sm">
+        <div className="pr-14 min-[380px]:pr-16 max-w-sm pointer-events-auto">
           <div className="flex items-center gap-1.5 flex-wrap mb-1">
             <span 
               onClick={() => {
