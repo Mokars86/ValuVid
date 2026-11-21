@@ -1,9 +1,11 @@
+@import "@fontsource/tiktok-sans/index.css";
 @import "tailwindcss";
 
 @layer base {
   :root {
     --sat: env(safe-area-inset-top, 0px);
     --sab: env(safe-area-inset-bottom, 0px);
+    --font-tiktok: 'TikTok Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
   }
 
   * {
@@ -11,14 +13,26 @@
     -webkit-tap-highlight-color: transparent;
   }
 
+  html, body, #root {
+    width: 100%;
+    height: 100%;
+    min-height: 100%;
+    min-height: 100dvh;
+    overflow-x: hidden;
+  }
+
   body {
     margin: 0;
     padding: 0;
     background-color: #050608;
     color: #f3f4f6;
-    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+    font-family: 'TikTok Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
     overflow-x: hidden;
     user-select: none;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    -webkit-text-size-adjust: 100%;
+    touch-action: pan-y;
   }
 }
 
@@ -56,6 +70,52 @@
 
 .animate-heart-float {
   animation: heartFloat 0.8s ease-out forwards;
+}
+
+/* Authentic TikTok Double-Tap Floating Heart Animation */
+@keyframes heartPop {
+  0% {
+    opacity: 0;
+    transform: scale(0);
+  }
+  15% {
+    opacity: 1;
+    transform: scale(1.35);
+  }
+  30% {
+    opacity: 1;
+    transform: scale(1.0);
+  }
+  75% {
+    opacity: 0.95;
+    transform: scale(1.05) translateY(-25px);
+  }
+  100% {
+    opacity: 0;
+    transform: scale(1.2) translateY(-65px);
+  }
+}
+
+.animate-heart-pop {
+  animation: heartPop 0.85s cubic-bezier(0.175, 0.885, 0.32, 1.275) forwards;
+  will-change: transform, opacity;
+}
+
+/* TikTok Sidebar Heart Button Micro-Bounce */
+@keyframes springPop {
+  0% {
+    transform: scale(0.8);
+  }
+  50% {
+    transform: scale(1.35);
+  }
+  100% {
+    transform: scale(1.1);
+  }
+}
+
+.animate-spring-pop {
+  animation: springPop 0.35s cubic-bezier(0.175, 0.885, 0.32, 1.275) forwards;
 }
 
 @keyframes pulseGlow {
@@ -117,4 +177,31 @@
 
 .animate-slide-down {
   animation: slideDownIn 0.26s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+/* TikTok-style floating music notes */
+@keyframes musicNoteFloat {
+  0% {
+    opacity: 0;
+    transform: translateY(0) translateX(0) scale(0.6) rotate(0deg);
+  }
+  30% {
+    opacity: 0.9;
+  }
+  70% {
+    opacity: 0.7;
+    transform: translateY(-28px) translateX(-14px) scale(1) rotate(-15deg);
+  }
+  100% {
+    opacity: 0;
+    transform: translateY(-48px) translateX(-24px) scale(0.7) rotate(-30deg);
+  }
+}
+
+.animate-music-note-1 {
+  animation: musicNoteFloat 2.6s ease-in-out infinite;
+}
+
+.animate-music-note-2 {
+  animation: musicNoteFloat 2.6s ease-in-out infinite 1.3s;
 }

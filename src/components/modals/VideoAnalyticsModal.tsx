@@ -19,9 +19,11 @@ export const VideoAnalyticsModal: React.FC = () => {
 
   if (!analyticsVideo) return null;
 
-  const totalTips = analyticsVideo.stats.tipsTotalGHS;
-  const watchRewardsEst = Number((analyticsVideo.stats.views * 0.008).toFixed(2));
-  const unlockRevenue = analyticsVideo.isPayPerUnlock ? Number((totalTips * 0.4).toFixed(2)) : 0;
+  const totalTips = analyticsVideo.stats?.tipsTotalGHS || 0;
+  const watchRewardsEst = Number(((analyticsVideo.stats?.views || 0) * 0.04).toFixed(2));
+  const unlockRevenue = analyticsVideo.isPayPerUnlock
+    ? Number(((analyticsVideo.unlockPriceGHS || 5.0) * 0.92 * (analyticsVideo.stats?.views ? Math.max(1, Math.floor(analyticsVideo.stats.views / 5)) : 0)).toFixed(2))
+    : 0;
   const grandTotal = Number((totalTips + watchRewardsEst + unlockRevenue).toFixed(2));
 
   return (

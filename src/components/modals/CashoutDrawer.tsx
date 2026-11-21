@@ -98,7 +98,7 @@ export const CashoutDrawer: React.FC = () => {
         amount: cashoutAmount,
         method: selectedMethod.name,
         ref: paystackTransferRef,
-        isPending: !currentUser?.isPro,
+        isPending: true,
       });
       setIsSuccess(true);
     }
@@ -179,12 +179,10 @@ export const CashoutDrawer: React.FC = () => {
               )}
             </div>
             <h4 className={`text-base font-bold ${theme === 'light' ? 'text-slate-900' : 'text-white'}`}>
-              {receiptData.isPending ? 'Payout Queued (Processing)' : 'Payout Dispatched!'}
+              Cashout Request Submitted
             </h4>
             <p className={`text-xs ${theme === 'light' ? 'text-slate-600' : 'text-neutral-300'} mt-1 max-w-xs leading-relaxed`}>
-              {receiptData.isPending
-                ? 'Your payout is queued in the scheduled batch queue (within 24–48 hours) as a Free Creator Tier holder. Funds will disburse automatically to your Mobile Money account once escrow float is verified.'
-                : 'Funds transferred instantly to your Mobile Money account via Paystack Priority Rails.'}
+              Your cashout request has been received and will be processed within 24 hours to your linked payout channel.
             </p>
 
             {/* Receipt Card */}
@@ -199,8 +197,8 @@ export const CashoutDrawer: React.FC = () => {
               </div>
               <div className={`flex items-center justify-between text-xs ${theme === 'light' ? 'text-slate-500' : 'text-neutral-400'}`}>
                 <span>Payout Status:</span>
-                <span className={`font-bold ${receiptData.isPending ? 'text-amber-500' : 'text-emerald-500'}`}>
-                  {receiptData.isPending ? 'Pending Batch Queue (24-48h)' : 'Completed (Instant)'}
+                <span className="font-bold text-amber-500">
+                  Pending (24 Hours Processing)
                 </span>
               </div>
               <div className={`flex items-center justify-between text-xs ${theme === 'light' ? 'text-slate-500' : 'text-neutral-400'}`}>
@@ -220,27 +218,6 @@ export const CashoutDrawer: React.FC = () => {
                 <span className="text-emerald-500 font-bold">GHS 0.00 (Zero Fee)</span>
               </div>
             </div>
-
-            {receiptData.isPending && (
-              <div className={`w-full p-3 rounded-xl border mb-3 text-left flex items-center justify-between gap-2 ${
-                theme === 'light' ? 'bg-amber-50 border-amber-200 text-amber-900' : 'bg-amber-500/10 border-amber-500/20 text-amber-300'
-              }`}>
-                <div className="text-[10px] leading-tight">
-                  <span className="font-bold block">Need instant zero-wait cashouts?</span>
-                  <span className={theme === 'light' ? 'text-amber-800' : 'text-neutral-400'}>Pro Creator Tier members bypass the batch queue.</span>
-                </div>
-                <button
-                  type="button"
-                  onClick={() => {
-                    handleClose();
-                    setShowProModal(true);
-                  }}
-                  className="px-2.5 py-1 text-[10px] bg-amber-500 text-black font-bold rounded-lg shrink-0"
-                >
-                  View Pro
-                </button>
-              </div>
-            )}
 
             <button
               onClick={handleClose}
@@ -321,14 +298,14 @@ export const CashoutDrawer: React.FC = () => {
               <div className={`flex items-center justify-between text-[10px] ${theme === 'light' ? 'text-slate-500' : 'text-neutral-400'}`}>
                 <span>Withdrawal Frequency:</span>
                 <span className={`font-semibold ${theme === 'light' ? 'text-slate-900' : 'text-white'}`}>
-                  {cashoutLimitInfo.isProMember ? 'Twice a week (2x / 7 days)' : 'Once a month (1x / 30 days)'}
+                  {cashoutLimitInfo.isProMember ? 'Once a week (1x / 7 days)' : 'Once a month (1x / 30 days)'}
                 </span>
               </div>
 
               <div className={`flex items-center justify-between text-[10px] ${theme === 'light' ? 'text-slate-500 border-slate-200' : 'text-neutral-400 border-neutral-900'} pt-1 border-t`}>
                 <span>Remaining this {cashoutLimitInfo.isProMember ? 'week' : 'month'}:</span>
                 <span className={`font-bold ${cashoutLimitInfo.remainingThisWeek > 0 ? (theme === 'light' ? 'text-emerald-600' : 'text-emerald-400') : 'text-rose-500'}`}>
-                  {cashoutLimitInfo.remainingThisWeek} of {cashoutLimitInfo.maxPerWeek} available
+                  {cashoutLimitInfo.remainingThisWeek} of 1 available
                 </span>
               </div>
 
@@ -615,7 +592,7 @@ export const CashoutDrawer: React.FC = () => {
                 {wallet.balanceGHS < 50
                   ? `Min. GHS 50.00 Required (Have GHS ${wallet.balanceGHS.toFixed(2)})`
                   : cashoutLimitInfo.remainingThisWeek <= 0
-                  ? `Weekly Limit Reached (${cashoutLimitInfo.maxPerWeek}x / 7 days)`
+                  ? `${cashoutLimitInfo.isProMember ? 'Weekly' : 'Monthly'} Limit Reached (1x / ${cashoutLimitInfo.isProMember ? '7' : '30'} days)`
                   : cashoutAmount < 50
                   ? 'Minimum Withdrawal is GHS 50.00'
                   : cashoutAmount > wallet.balanceGHS

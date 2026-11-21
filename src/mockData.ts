@@ -1,32 +1,4 @@
-import { VideoItem, BountyChallenge, CommentItem, TransactionItem, PayoutMethodItem, Creator } from './types';
-
-export const CURRENT_USER: Creator = {
-  id: 'user_current',
-  name: 'Emmanuel Osei',
-  username: 'emmanuel_creator',
-  avatar: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=200&auto=format&fit=crop&q=80',
-  bio: 'Digital story-teller & tech creator based in Accra 🇬🇭. Building the future of creator monetization on ValuVid.',
-  followers: 4820,
-  following: 342,
-  likes: 24500,
-  totalTipsEarned: 890.50,
-  verified: true,
-  badge: 'Top Earner 🏆',
-  isHumanVerified: true,
-  authenticityScore: 100,
-  certificates: [
-    {
-      id: 'cert-1',
-      title: 'Digital Creator Monetization Pro',
-      badgeName: 'Monetization Pro ⚡️',
-      badgeIcon: '⚡️',
-      issueDate: 'Oct 2026',
-      credentialId: 'VV-CERT-90412',
-      creatorName: 'ValuVid Academy',
-      videoTitle: 'Foundations of Micro-Tipping & MoMo Rails'
-    }
-  ]
-};
+import { VideoItem, BountyChallenge, CommentItem, TransactionItem, PayoutMethodItem } from './types';
 
 export const INITIAL_VIDEOS: VideoItem[] = [];
 

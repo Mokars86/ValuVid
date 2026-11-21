@@ -23,6 +23,7 @@ import {
   fetchFollowingListFromSupabase,
   fileToDataUrl,
   deleteVideoFromSupabase,
+  uploadMediaToSupabase,
   markVideoAsDeleted,
   getDeletedVideoIds,
   fetchDeletedVideoIdsFromSupabase,
@@ -36,8 +37,12 @@ import {
   getCurrentSupabaseUser,
   fetchBountiesFromSupabase,
   fetchTransactionsFromSupabase,
-  saveUserProfileToSupabase
+  saveUserProfileToSupabase,
+  savePinnedVideosInSupabase,
+  recordVideoViewInSupabase,
+  getOrCreateViewerDeviceId
 } from '../services/supabaseClient';
+import { recordViewerForVideo } from '../components/feed/VideoViewersModal';
 import { App as CapApp } from '@capacitor/app';
 import { saveMediaBlob, cacheLiveVideoUrl } from '../utils/mediaStorage';
 import { 
@@ -45,12 +50,14 @@ import {
   recordNewRegistration, 
   validatePayoutChannelExclusivity 
 } from '../utils/deviceFingerprint';
-import { recordKnownUser } from '../utils/userDirectory';
+import { recordKnownUser, isTestUserOrMockVideo, isMockAccount } from '../utils/userDirectory';
 import { INITIAL_COMMUNITY_VIDEOS, getInitialFeedVideos } from '../data/communityVideos';
 
 interface AppContextType {
   activeTab: ActiveTab;
   setActiveTab: (tab: ActiveTab) => void;
+  navBadges: Record<ActiveTab, number>;
+  clearNavBadge: (tab: ActiveTab) => void;
   feedFilter: 'following' | 'foryou' | 'global' | 'fresh' | 'bounties' | 'ghana' | 'tech';
   setFeedFilter: (f: 'following' | 'foryou' | 'global' | 'fresh' | 'bounties' | 'ghana' | 'tech') => void;
   videos: VideoItem[];
@@ -59,6 +66,8 @@ interface AppContextType {
   refreshVideosFromSupabase: () => void;
   currentVideoIndex: number;
   setCurrentVideoIndex: React.Dispatch<React.SetStateAction<number>>;
+  requestedVideoId: string | null;
+  clearRequestedVideoId: () => void;
   discoverSearchQuery: string;
   setDiscoverSearchQuery: (query: string) => void;
   selectedCreatorProfile: Creator | null;
@@ -154,7 +163,6 @@ interface AppContextType {
   loginUser: (email: string, password: string) => Promise<{ success: boolean; error?: string }>;
   signupUser: (email: string, password: string, name: string, username: string, phone?: string) => Promise<{ success: boolean; error?: string; requiresEmailConfirmation?: boolean }>;
   logoutUser: () => Promise<void>;
-  loginAsDemoUser: () => void;
   updateUserProfile: (updates: { name?: string; username?: string; bio?: string; avatar?: string }) => Promise<void>;
 
   // Early-Stage Sustainable Funding & Pro Tools
@@ -228,32 +236,51 @@ interface AppContextType {
 
   // Actions
   toggleLikeVideo: (videoId: string) => void;
+  likeVideo: (videoId: string) => void;
+  followedCreators: string[];
+  isFollowingCreator: (usernameOrId: string) => boolean;
   toggleFollowCreator: (creatorId: string) => void;
   sendTip: (videoId: string, amountGHS: number, message?: string) => boolean;
   unlockContent: (videoId: string) => boolean;
+  backPredictionWithWallet: (predId: string, predTitle: string, amountGHS?: number) => boolean;
   processCashout: (methodId: string, amountGHS: number, customRef?: string) => boolean;
   addFundsToWallet: (amountGHS: number, referenceId?: string, paymentMethod?: string) => void;
   addPayoutMethod: (method: Omit<PayoutMethodItem, 'id'>) => string;
   deletePayoutMethod: (methodId: string) => void;
   setDefaultPayoutMethod: (methodId: string) => void;
   addComment: (videoId: string, text: string, tipAmount?: number) => void;
-  publishNewVideo: (video: Partial<VideoItem> & { fileBlob?: Blob | File }) => void;
+  publishNewVideo: (video: Partial<VideoItem> & { fileBlob?: Blob | File }) => Promise<void>;
   updateVideo: (videoId: string, updates: Partial<VideoItem>) => Promise<boolean>;
   deleteVideo: (videoId: string) => Promise<boolean>;
+  pinnedVideoIds: string[];
+  togglePinVideo: (videoId: string) => void;
   shareVideoWithRewardLink: (video: VideoItem) => void;
+  recordVideoView: (videoId: string, customViewer?: any) => void;
 }
 
 const AppContext = createContext<AppContextType | undefined>(undefined);
 
 const GHS_TO_USD_RATE = 0.083; // Approx 1 USD = 12 GHS
 
-const DEFAULT_AVATAR = '/default-avatar.svg';
+const DEFAULT_AVATAR = '/default-avatar.jpg';
 
 const getStoredProfile = (): Creator | null => {
   try {
     const raw = localStorage.getItem('valuvid_user_profile') || localStorage.getItem('valuvid_custom_profile');
     if (raw) {
       const parsed = JSON.parse(raw);
+      if (
+        !parsed ||
+        parsed.id === 'demo-creator-1' ||
+        parsed.id === 'user_current' ||
+        isMockAccount(parsed.username)
+      ) {
+        try {
+          localStorage.removeItem('valuvid_user_profile');
+          localStorage.removeItem('valuvid_custom_profile');
+        } catch {}
+        return null;
+      }
       if (typeof parsed.followers !== 'number' || parsed.followers < 0) {
         parsed.followers = 0;
       }
@@ -293,8 +320,8 @@ const getStoredIsLoggedIn = (): boolean => {
 
 const resolveAvatar = (metaAvatar?: string) => {
   const saved = getStoredProfile();
-  if (saved?.avatar && saved.avatar !== '/default-avatar.jpg' && !saved.avatar.includes('/default-avatar.jpg') && !saved.avatar.includes('unsplash.com')) return saved.avatar;
-  if (metaAvatar && !metaAvatar.includes('dicebear.com') && !metaAvatar.includes('unsplash.com')) return metaAvatar;
+  if (saved?.avatar && saved.avatar !== '/default-avatar.svg' && !saved.avatar.includes('default-avatar.svg') && !saved.avatar.includes('unsplash.com') && !saved.avatar.includes('dicebear.com')) return saved.avatar;
+  if (metaAvatar && !metaAvatar.includes('dicebear.com') && !metaAvatar.includes('unsplash.com') && !metaAvatar.includes('default-avatar.svg')) return metaAvatar;
   return DEFAULT_AVATAR;
 };
 
@@ -329,6 +356,10 @@ const INITIAL_USER: Creator = (() => {
 const INITIAL_SHOP_PRODUCTS: ProductItem[] = [];
 
 export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
+  const [currentUser, setCurrentUser] = useState<Creator>(() => {
+    const stored = getStoredProfile();
+    return (stored && stored.id) ? stored : INITIAL_USER;
+  });
   const [activeTab, setActiveTab] = useState<ActiveTab>('feed');
   const [feedFilter, setFeedFilter] = useState<'following' | 'foryou' | 'global' | 'fresh' | 'bounties' | 'ghana' | 'tech'>('foryou');
   const [videos, setVideos] = useState<VideoItem[]>(() => getInitialFeedVideos());
@@ -341,6 +372,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }
   });
   const [currentVideoIndex, setCurrentVideoIndex] = useState(0);
+  const [requestedVideoId, setRequestedVideoId] = useState<string | null>(null);
+  const clearRequestedVideoId = useCallback(() => setRequestedVideoId(null), []);
   const [discoverSearchQuery, setDiscoverSearchQuery] = useState('');
   const [selectedCreatorProfile, setSelectedCreatorProfile] = useState<Creator | null>(null);
 
@@ -352,6 +385,115 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     setSelectedCreatorProfile(null);
   }, []);
 
+  const lastViewedAtRef = React.useRef<Map<string, number>>(new Map());
+
+  const recordVideoView = useCallback((videoId: string, customViewer?: any) => {
+    if (!videoId) return;
+
+    // Resolve a stable unique real-user identifier (skip anonymous/mock @creator views)
+    const viewer = customViewer || currentUser;
+    const viewerUsername = (viewer?.username || '').trim().toLowerCase().replace(/^@/, '');
+    const viewerName = (viewer?.name || '').trim().toLowerCase();
+    if (!viewerUsername || isMockAccount(viewerUsername) || viewerName === 'valuvid creator') {
+      return;
+    }
+    const storedAuth = getStoredAuthUser();
+    const rawUser = viewer?.id || viewerUsername || storedAuth?.id;
+    const cleanUser = String(rawUser).trim().toLowerCase().replace(/^@/, '');
+
+    // Check client-side viewed videos list for this user (strict 1 view per user)
+    const userViewedStorageKey = `valuvid_viewed_videos_${cleanUser}`;
+    let viewedList: string[] = [];
+    try {
+      const stored = localStorage.getItem(userViewedStorageKey);
+      if (stored) {
+        const parsed = JSON.parse(stored);
+        if (Array.isArray(parsed)) viewedList = parsed;
+      }
+    } catch {}
+
+    const hasAlreadyViewed = viewedList.includes(videoId);
+
+    // If user has already watched this video, strictly do NOT increment views!
+    if (hasAlreadyViewed) {
+      return;
+    }
+
+    // Mark as watched by this user locally immediately
+    try {
+      viewedList.push(videoId);
+      if (viewedList.length > 1000) viewedList = viewedList.slice(-1000);
+      localStorage.setItem(userViewedStorageKey, JSON.stringify(viewedList));
+    } catch {}
+
+    // 1. Increment views in local state for feed, profile, and discover (1 view per unique user)
+    setVideos((prev) =>
+      prev.map((v) => {
+        if (v.id === videoId) {
+          const currentViews = typeof v.stats?.views === 'number' ? v.stats.views : 0;
+          return {
+            ...v,
+            stats: {
+              ...v.stats,
+              views: currentViews + 1,
+            },
+          };
+        }
+        return v;
+      })
+    );
+
+    // 2. Keep local user videos in sync in localStorage for profile
+    try {
+      const rawLocal = localStorage.getItem('valuvid_user_videos');
+      if (rawLocal) {
+        const localVideos: VideoItem[] = JSON.parse(rawLocal);
+        const updated = localVideos.map((lv) =>
+          lv.id === videoId
+            ? {
+                ...lv,
+                stats: {
+                  ...lv.stats,
+                  views: (typeof lv.stats?.views === 'number' ? lv.stats.views : 0) + 1,
+                },
+              }
+            : lv
+        );
+        localStorage.setItem('valuvid_user_videos', JSON.stringify(updated));
+      }
+    } catch {}
+
+    // 3. Record in local viewers modal sheet
+    recordViewerForVideo(videoId, {
+      ...viewer,
+      id: cleanUser,
+      username: viewer?.username || cleanUser,
+    });
+
+    // 4. Sync unique view record with Supabase so all devices and users update in real-time
+    recordVideoViewInSupabase(videoId, {
+      ...viewer,
+      id: cleanUser,
+      username: viewer?.username || cleanUser,
+    }).then((res) => {
+      if (res.success && typeof res.views === 'number' && res.views > 0) {
+        setVideos((prev) =>
+          prev.map((v) =>
+            v.id === videoId
+              ? {
+                  ...v,
+                  stats: {
+                    ...v.stats,
+                    views: Math.max(v.stats?.views || 0, res.views),
+                  },
+                }
+              : v
+          )
+        );
+      }
+    });
+  }, [currentUser]);
+
   const playVideo = useCallback((targetVideo: VideoItem) => {
     if (!targetVideo) return;
     try {
@@ -360,18 +502,20 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     setFeedFilter('foryou');
     setSelectedCreatorProfile(null);
 
+    // Immediately count view
+    recordVideoView(targetVideo.id, currentUser);
+
     setVideos((prev) => {
       const existingIdx = prev.findIndex((v) => v.id === targetVideo.id);
       if (existingIdx !== -1) {
-        setCurrentVideoIndex(existingIdx);
         return prev;
       }
-      setCurrentVideoIndex(0);
       return [targetVideo, ...prev];
     });
+    setRequestedVideoId(targetVideo.id);
 
     setActiveTab('feed');
-  }, [setFeedFilter, setVideos, setCurrentVideoIndex, setActiveTab]);
+  }, [setFeedFilter, setVideos, setActiveTab, recordVideoView, currentUser]);
 
   // ValuShop E-Commerce Layer State (Real Products Only)
   const [products, setProducts] = useState<ProductItem[]>(() => {
@@ -474,10 +618,6 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       document.documentElement.classList.toggle('theme-light', theme === 'light');
     }
   }, [theme]);
-  const [currentUser, setCurrentUser] = useState<Creator>(() => {
-    const stored = getStoredProfile();
-    return (stored && stored.id) ? stored : INITIAL_USER;
-  });
   const [deviceMode, setDeviceMode] = useState<'mobile' | 'fullscreen' | 'iphone'>('mobile');
   const [showSplash, setShowSplash] = useState(true);
   const [isFeedMuted, setIsFeedMutedState] = useState<boolean>(() => {
@@ -494,6 +634,53 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       localStorage.setItem('valuvid_feed_muted', String(muted));
     } catch {}
   }, []);
+
+  const [followedCreators, setFollowedCreators] = useState<string[]>(() => {
+    try {
+      const stored = localStorage.getItem('valuvid_followed_creators');
+      if (stored) {
+        const parsed = JSON.parse(stored);
+        if (Array.isArray(parsed)) return parsed;
+      }
+    } catch {}
+    return [];
+  });
+
+  const isFollowingCreator = useCallback(
+    (usernameOrId: string): boolean => {
+      if (!usernameOrId) return false;
+      const clean = usernameOrId.trim().toLowerCase().replace(/^@/, '');
+      const followedSet = new Set(
+        followedCreators.map((item) => item.trim().toLowerCase().replace(/^@/, ''))
+      );
+      if (followedSet.has(clean)) return true;
+      // Also check if usernameOrId is a creator ID whose username is in followedCreators
+      const matched = videos.find((v) => (v.creator?.id || '').toLowerCase() === clean);
+      if (matched?.creator?.username) {
+        return followedSet.has(matched.creator.username.trim().toLowerCase().replace(/^@/, ''));
+      }
+      return false;
+    },
+    [followedCreators, videos]
+  );
+
+  const [pinnedVideoIds, setPinnedVideoIds] = useState<string[]>(() => {
+    try {
+      const prof = getStoredProfile();
+      const cleanUser = (prof?.username || '').trim().toLowerCase().replace(/^@/, '');
+      if (cleanUser) {
+        const saved = localStorage.getItem(`valuvid_pinned_videos_${cleanUser}`);
+        if (saved) {
+          const parsed = JSON.parse(saved);
+          if (Array.isArray(parsed)) return parsed.slice(0, 3);
+        }
+      }
+      if (Array.isArray(prof?.pinnedVideoIds)) {
+        return prof.pinnedVideoIds.slice(0, 3);
+      }
+    } catch {}
+    return [];
+  });
 
   const DEFAULT_WALLET = {
     balanceGHS: 0.00,
@@ -543,6 +730,113 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     } catch {}
     return [];
   });
+
+  // Bottom Navigation Badge Notifications (Home, Discover, ValuWallet, Profile)
+  const [navBadges, setNavBadges] = useState<Record<ActiveTab, number>>({
+    feed: 0,
+    discover: 0,
+    create: 0,
+    wallet: 0,
+    profile: 0,
+  });
+
+  const clearNavBadge = useCallback((tab: ActiveTab) => {
+    setNavBadges((prev) => (prev[tab] === 0 ? prev : { ...prev, [tab]: 0 }));
+    try {
+      if (tab === 'feed' || tab === 'discover') {
+        const ids = videos.map((v) => v.id);
+        localStorage.setItem(`valuvid_seen_videos_${tab}`, JSON.stringify(ids.slice(0, 200)));
+      } else if (tab === 'wallet') {
+        const txKeys = transactions.map((tx) => `${tx.id}:${tx.status}`);
+        localStorage.setItem('valuvid_seen_tx_keys', JSON.stringify(txKeys.slice(0, 200)));
+      } else if (tab === 'profile') {
+        const myUsername = (currentUser?.username || '').toLowerCase().replace(/^@/, '');
+        const myVids = videos.filter(
+          (v) => (v.creator?.username || '').toLowerCase().replace(/^@/, '') === myUsername
+        );
+        const totalLikes = myVids.reduce((sum, v) => sum + (v.stats?.likes || 0), 0);
+        const totalComments = myVids.reduce((sum, v) => sum + (v.stats?.comments || 0), 0);
+        const totalScore = (currentUser?.followers || 0) + totalLikes + totalComments;
+        localStorage.setItem('valuvid_seen_profile_score', String(totalScore));
+      }
+    } catch {}
+  }, [videos, transactions, currentUser]);
+
+  // Clear badge automatically when the user switches to that tab
+  useEffect(() => {
+    clearNavBadge(activeTab);
+  }, [activeTab, clearNavBadge]);
+
+  // Compute unseen video badges for Home & Discover when new videos arrive
+  useEffect(() => {
+    if (videos.length === 0) return;
+    const myUsername = (currentUser?.username || '').toLowerCase().replace(/^@/, '');
+    const otherVideoIds = videos
+      .filter((v) => (v.creator?.username || '').toLowerCase().replace(/^@/, '') !== myUsername)
+      .map((v) => v.id);
+
+    const checkTab = (tab: 'feed' | 'discover') => {
+      if (activeTab === tab) return 0;
+      try {
+        const raw = localStorage.getItem(`valuvid_seen_videos_${tab}`);
+        if (!raw) {
+          localStorage.setItem(`valuvid_seen_videos_${tab}`, JSON.stringify(videos.map((v) => v.id).slice(0, 200)));
+          return 0;
+        }
+        const seen = new Set<string>(JSON.parse(raw));
+        return otherVideoIds.filter((id) => !seen.has(id)).length;
+      } catch {
+        return 0;
+      }
+    };
+
+    const feedCount = checkTab('feed');
+    const discoverCount = checkTab('discover');
+    setNavBadges((prev) =>
+      prev.feed === feedCount && prev.discover === discoverCount
+        ? prev
+        : { ...prev, feed: feedCount, discover: discoverCount }
+    );
+  }, [videos, activeTab, currentUser?.username]);
+
+  // Compute unseen Wallet / Cashout badges
+  useEffect(() => {
+    if (activeTab === 'wallet') return;
+    try {
+      const raw = localStorage.getItem('valuvid_seen_tx_keys');
+      const currentKeys = transactions.map((tx) => `${tx.id}:${tx.status}`);
+      if (!raw) {
+        localStorage.setItem('valuvid_seen_tx_keys', JSON.stringify(currentKeys.slice(0, 200)));
+        return;
+      }
+      const seen = new Set<string>(JSON.parse(raw));
+      const unseenCount = currentKeys.filter((k) => !seen.has(k)).length;
+      setNavBadges((prev) => (prev.wallet === unseenCount ? prev : { ...prev, wallet: unseenCount }));
+    } catch {}
+  }, [transactions, activeTab]);
+
+  // Compute unseen Profile engagement badges (new followers, likes, comments)
+  useEffect(() => {
+    if (activeTab === 'profile') return;
+    const myUsername = (currentUser?.username || '').toLowerCase().replace(/^@/, '');
+    if (!myUsername || myUsername === 'creator') return;
+    const myVids = videos.filter(
+      (v) => (v.creator?.username || '').toLowerCase().replace(/^@/, '') === myUsername
+    );
+    const totalLikes = myVids.reduce((sum, v) => sum + (v.stats?.likes || 0), 0);
+    const totalComments = myVids.reduce((sum, v) => sum + (v.stats?.comments || 0), 0);
+    const totalScore = (currentUser?.followers || 0) + totalLikes + totalComments;
+    try {
+      const raw = localStorage.getItem('valuvid_seen_profile_score');
+      if (raw === null) {
+        localStorage.setItem('valuvid_seen_profile_score', String(totalScore));
+        return;
+      }
+      const prevScore = Number(raw) || 0;
+      const delta = Math.max(0, totalScore - prevScore);
+      setNavBadges((prev) => (prev.profile === delta ? prev : { ...prev, profile: delta }));
+    } catch {}
+  }, [videos, currentUser?.username, currentUser?.followers, activeTab]);
 
   // Automatically persist wallet state across restarts
   useEffect(() => {
@@ -771,19 +1065,18 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             v.id !== 'vid-masterclass-1' && 
             v.id !== 'vid-user-1793762676066' &&
             v.id !== 'vid-user-1793960000000' &&
-            v.id !== 'test_follow_record' &&
             !v.id.startsWith('vid-sample') && 
-            !v.id.startsWith('test') &&
-            !v.id.startsWith('test_') &&
-            !(v.title || '').toLowerCase().includes('test follow') &&
             !(v.title || '').includes('[DELETED]') &&
+            (v.creator?.username || '').toLowerCase() !== 'mokarsstitches' &&
+            !v.id.includes('mokarsstitches') &&
             v.caption !== '[DELETED]' &&
             v.caption !== '[FOLLOW_RECORD]' &&
             v.caption !== '[LIKE_RECORD]' &&
             (v.category as string) !== 'deleted' &&
             (v.category as string) !== 'follow_record' &&
             (v.category as string) !== 'like_record' &&
-            !v.videoUrl?.includes('/videos/sample')
+            !v.videoUrl?.includes('/videos/sample') &&
+            !isTestUserOrMockVideo(v)
           );
           const followed: string[] = JSON.parse(localStorage.getItem('valuvid_followed_creators') || '[]');
           const likedIds: string[] = JSON.parse(localStorage.getItem('valuvid_liked_video_ids') || '[]');
@@ -801,10 +1094,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
               (v.category as string) !== 'like_record' && 
               v.id !== 'vid-user-1793762676066' && 
               v.id !== 'vid-user-1793960000000' && 
-              v.id !== 'test_follow_record' &&
-              !v.id.startsWith('test') &&
-              !v.id.startsWith('test_') &&
-              !(v.title || '').toLowerCase().includes('test follow')
+              !isTestUserOrMockVideo(v)
           );
           cleanLocal.sort((a, b) => {
             const timeA = parseInt(a.id.replace('vid-user-', '')) || 0;
@@ -818,17 +1108,18 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
               !deletedIds.includes(v.id) &&
               v.id !== 'vid-user-1793762676066' && 
               v.id !== 'vid-user-1793960000000' && 
-              v.id !== 'test_follow_record' &&
-              !v.id.startsWith('test') &&
-              !v.id.startsWith('test_') &&
-              !(v.title || '').toLowerCase().includes('test follow') &&
               !(v.title || '').includes('[DELETED]') &&
+              (v.creator?.username || '').toLowerCase() !== 'mokarsstitches' &&
+              !v.id.includes('mokarsstitches') &&
               v.caption !== '[DELETED]' &&
               v.caption !== '[FOLLOW_RECORD]' &&
               v.caption !== '[LIKE_RECORD]' &&
+              v.caption !== '[VIEW_RECORD]' &&
               (v.category as string) !== 'deleted' &&
               (v.category as string) !== 'follow_record' &&
-              (v.category as string) !== 'like_record'
+              (v.category as string) !== 'like_record' &&
+              (v.category as string) !== 'view_record' &&
+              !isTestUserOrMockVideo(v)
           );
 
           // Synchronize local user uploads with latest cloud stats (likes, views, tips, followers)
@@ -838,21 +1129,23 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           const updatedLocal = cleanLocal.map((lv) => {
             const remote = dbMap.get(lv.id);
             if (remote) {
+              const finalLikes = typeof remote.stats?.likes === 'number' ? remote.stats.likes : (lv.stats?.likes ?? 0);
+              const finalViews = typeof remote.stats?.views === 'number' ? remote.stats.views : (lv.stats?.views ?? 0);
               return {
                 ...lv,
                 stats: {
                   ...lv.stats,
                   ...remote.stats,
-                  likes: remote.stats?.likes ?? lv.stats?.likes ?? 0,
-                  views: Math.max(lv.stats?.views || 1, remote.stats?.views || 1),
-                  comments: remote.stats?.comments ?? lv.stats?.comments ?? 0,
-                  shares: remote.stats?.shares ?? lv.stats?.shares ?? 0,
-                  tipsTotalGHS: remote.stats?.tipsTotalGHS ?? lv.stats?.tipsTotalGHS ?? 0,
-                  tipsCount: remote.stats?.tipsCount ?? lv.stats?.tipsCount ?? 0,
+                  likes: finalLikes,
+                  views: finalViews,
+                  comments: Math.max(remote.stats?.comments ?? 0, lv.stats?.comments ?? 0),
+                  shares: Math.max(remote.stats?.shares ?? 0, lv.stats?.shares ?? 0),
+                  tipsTotalGHS: Math.max(remote.stats?.tipsTotalGHS ?? 0, lv.stats?.tipsTotalGHS ?? 0),
+                  tipsCount: Math.max(remote.stats?.tipsCount ?? 0, lv.stats?.tipsCount ?? 0),
                 },
                 creator: {
                   ...lv.creator,
-                  followers: remote.creator?.followers ?? lv.creator?.followers ?? 0,
+                  followers: Math.max(remote.creator?.followers ?? 0, lv.creator?.followers ?? 0),
                   following: remote.creator?.following ?? lv.creator?.following ?? 0,
                 }
               };
@@ -867,12 +1160,17 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           const masterMap = new Map<string, VideoItem>();
           // Cloud DB is the authoritative source for published feed
           cleanDb.forEach((v) => masterMap.set(v.id, v));
-          // Overlay local uploads (preserving fresh local media stream URLs)
+          // Overlay local uploads (preserving fresh local media stream URLs and stats)
           updatedLocal.forEach((v) => {
             if (masterMap.has(v.id)) {
               const existing = masterMap.get(v.id)!;
               masterMap.set(v.id, {
                 ...existing,
+                stats: {
+                  ...existing.stats,
+                  likes: typeof existing.stats?.likes === 'number' ? existing.stats.likes : (v.stats?.likes || 0),
+                  views: typeof existing.stats?.views === 'number' ? existing.stats.views : (v.stats?.views || 0),
+                },
                 videoUrl: v.videoUrl || existing.videoUrl,
                 thumbnailUrl: v.thumbnailUrl || existing.thumbnailUrl,
               });
@@ -993,12 +1291,21 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       if (currentUser?.username && currentUser.username !== 'creator') {
         fetchUserProfileFromSupabase(currentUser.username).then((p) => {
           if (p) {
+            const remotePinned = Array.isArray((p as any).pinnedVideoIds) ? (p as any).pinnedVideoIds.slice(0, 3) : null;
             setCurrentUser((prev) => ({
               ...prev,
               followers: p.followers,
               following: p.following,
               likes: p.likes,
+              ...(remotePinned && remotePinned.length > 0 ? { pinnedVideoIds: remotePinned } : {}),
             }));
+            if (remotePinned && remotePinned.length > 0) {
+              setPinnedVideoIds(remotePinned);
+              try {
+                const cleanU = currentUser.username.trim().toLowerCase().replace(/^@/, '');
+                localStorage.setItem(`valuvid_pinned_videos_${cleanU}`, JSON.stringify(remotePinned));
+              } catch {}
+            }
           }
         }).catch(() => {});
       }
@@ -1194,19 +1501,32 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             if (
               updatedRow.category !== 'user_registry' &&
               updatedRow.category !== 'follow_record' &&
-              updatedRow.category !== 'like_record'
+              updatedRow.category !== 'like_record' &&
+              updatedRow.category !== 'view_record'
             ) {
               setVideos((prev) =>
                 prev.map((v) => {
                   if (v.id === updatedRow.id) {
                     const newStats = updatedRow.stats || v.stats;
-                    const newLikes = typeof newStats.likes === 'number' ? newStats.likes : v.stats.likes;
+                    const newLikes = typeof newStats.likes === 'number' ? newStats.likes : (v.stats?.likes || 0);
+                    const newViews = typeof newStats.views === 'number' ? newStats.views : (v.stats?.views || 1);
+                    const newComments = typeof newStats.comments === 'number'
+                      ? newStats.comments
+                      : (Array.isArray(newStats.commentsList) ? newStats.commentsList.length : (v.stats?.comments || 0));
+                    const newShares = typeof newStats.shares === 'number' ? newStats.shares : (v.stats?.shares || 0);
+                    const newTips = typeof newStats.tipsTotalGHS === 'number' ? newStats.tipsTotalGHS : (v.stats?.tipsTotalGHS || 0);
+                    const newTipsCount = typeof newStats.tipsCount === 'number' ? newStats.tipsCount : (v.stats?.tipsCount || 0);
                     return {
                       ...v,
                       stats: {
                         ...v.stats,
                         ...newStats,
                         likes: newLikes,
+                        views: newViews,
+                        comments: newComments,
+                        shares: newShares,
+                        tipsTotalGHS: newTips,
+                        tipsCount: newTipsCount,
                       },
                       creator: {
                         ...v.creator,
@@ -1246,7 +1566,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             }
           } else if (payload.eventType === 'INSERT' || payload.eventType === 'DELETE') {
             const row: any = payload.new || payload.old;
-            if (row && (row.category === 'follow_record' || row.category === 'like_record')) {
+            if (row && (row.category === 'follow_record' || row.category === 'like_record' || row.category === 'view_record')) {
               const cur = getStoredProfile();
               if (cur?.username) syncUserStats(cur.username);
               refreshVideosFromSupabase();
@@ -1256,9 +1576,15 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       )
       .subscribe();
 
+    // Periodic live cloud polling to ensure likes, comments, and views remain 100% in sync
+    const livePollInterval = setInterval(() => {
+      refreshVideosFromSupabase();
+    }, 12000);
+
     return () => {
       subscription.unsubscribe();
       supabase.removeChannel(realtimeChannel);
+      clearInterval(livePollInterval);
     };
   }, []);
 
@@ -1480,14 +1806,14 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   // Fair & Transparent Cashout Limits Engine:
   // - Minimum withdrawal threshold: GHS 50.00
-  // - Free accounts: 1 withdrawal every 30 days (once a month)
-  // - Pro subscribed creators: 2 withdrawals every 7 days (twice a week)
+  // - Free accounts: 1 withdrawal every 30 days (1x/month)
+  // - Pro subscribed creators: 1 withdrawal every 7 days (1x/week)
   const cashoutLimitInfo = useMemo(() => {
     const now = Date.now();
     const THIRTY_DAYS_MS = 30 * 24 * 60 * 60 * 1000;
     const SEVEN_DAYS_MS = 7 * 24 * 60 * 60 * 1000;
     const periodMs = isProMember ? SEVEN_DAYS_MS : THIRTY_DAYS_MS;
-    const maxPerPeriod = isProMember ? 2 : 1;
+    const maxPerPeriod = 1; // 1 withdrawal per month (Free) or 1 withdrawal per week (Pro)
     const recent = cashoutTimestamps.filter((ts) => (now - ts) < periodMs);
     const usedInPeriod = recent.length;
     const remainingInPeriod = Math.max(0, maxPerPeriod - usedInPeriod);
@@ -1500,8 +1826,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       const oldestTs = Math.min(...recent);
       nextAvailableDate = new Date(oldestTs + periodMs);
       reason = isProMember
-        ? 'Weekly withdrawal limit of 2 cashouts reached.'
-        : 'Monthly withdrawal limit (1 cashout per 30 days for Free tier accounts) reached. Upgrade to Pro for expedited weekly withdrawals.';
+        ? 'Weekly withdrawal limit reached (1 withdrawal per 7 days for Pro Members).'
+        : 'Monthly withdrawal limit reached (1 withdrawal per 30 days for Free tier accounts). Upgrade to Pro for expedited weekly withdrawals.';
     } else if (wallet.balanceGHS < 50.00) {
       reason = `Minimum withdrawal threshold is GHS 50.00. Current balance: GHS ${wallet.balanceGHS.toFixed(2)}`;
     }
@@ -1632,21 +1958,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const clearShareToast = () => setShareToast(null);
 
   const toggleLikeVideo = useCallback((videoId: string) => {
-    // Prevent creators from liking their own content if authenticated or distinctly identified
-    const targetVideo = videos.find((v) => v.id === videoId);
-    if (targetVideo) {
-      const isOwner = Boolean(
-        (authUser?.id && targetVideo.creator?.id && authUser.id === targetVideo.creator.id) ||
-        (authUser?.email && targetVideo.creator?.email && authUser.email.toLowerCase() === targetVideo.creator.email.toLowerCase()) ||
-        (currentUser?.id && targetVideo.creator?.id && currentUser.id === targetVideo.creator.id && currentUser.id !== 'user_current' && currentUser.id !== 'creator') ||
-        (currentUser?.username && targetVideo.creator?.username && currentUser.username.toLowerCase() === targetVideo.creator.username.toLowerCase() && currentUser.username.toLowerCase() !== 'creator')
-      );
-      if (isOwner) {
-        setShareToast("Creators cannot like their own videos 🚫");
-        return;
-      }
-    }
-
+    // TikTok-style: Any user (including creators themselves) can like videos
     sounds.playLikePop();
     setVideos((prev) =>
       prev.map((v) => {
@@ -1680,23 +1992,107 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             localStorage.setItem('valuvid_liked_videos', JSON.stringify(nextCached));
           } catch {}
 
-          // 3. Persist local user videos if applicable
+          // 3. Persist local user videos & cached feed videos if applicable
           try {
             const localVideos: VideoItem[] = JSON.parse(localStorage.getItem('valuvid_user_videos') || '[]');
             const updated = localVideos.map((lv) => (lv.id === videoId ? updatedVideo : lv));
             localStorage.setItem('valuvid_user_videos', JSON.stringify(updated));
           } catch {}
 
+          try {
+            const cachedVideos: VideoItem[] = JSON.parse(localStorage.getItem('valuvid_cached_feed_videos') || '[]');
+            const updatedCached = cachedVideos.map((cv) => (cv.id === videoId ? updatedVideo : cv));
+            localStorage.setItem('valuvid_cached_feed_videos', JSON.stringify(updatedCached));
+          } catch {}
+
           // 4. Persist to Supabase Database with unique user like record
           const userKey = authUser?.id || currentUser?.username || currentUser?.id || 'guest';
-          saveLikeRecordInSupabase(userKey, videoId, isLiked, nextLikes);
+          saveLikeRecordInSupabase(userKey, videoId, isLiked, nextLikes).then((res) => {
+            if (typeof res?.likes === 'number' && res.likes !== nextLikes) {
+              setVideos((latest) =>
+                latest.map((item) =>
+                  item.id === videoId
+                    ? { ...item, stats: { ...item.stats, likes: res.likes } }
+                    : item
+                )
+              );
+            }
+          });
 
           return updatedVideo;
         }
         return v;
       })
     );
-  }, [videos, currentUser, authUser]);
+  }, [authUser, currentUser]);
+
+  // TikTok Double-Tap affirmative Like: Always marks as liked, never unlikes if already liked
+  const likeVideo = useCallback((videoId: string) => {
+    sounds.playLikePop();
+    setVideos((prev) =>
+      prev.map((v) => {
+        if (v.id === videoId) {
+          if (v.isLiked) {
+            // Already liked: TikTok keeps it liked without toggling off or incrementing again
+            return v;
+          }
+          const nextLikes = (v.stats?.likes || 0) + 1;
+          const updatedStats = {
+            ...v.stats,
+            likes: nextLikes,
+          };
+
+          const updatedVideo: VideoItem = {
+            ...v,
+            isLiked: true,
+            stats: updatedStats,
+          };
+
+          // 1. Persist liked IDs in localStorage
+          try {
+            const likedIds: string[] = JSON.parse(localStorage.getItem('valuvid_liked_video_ids') || '[]');
+            const nextLikedIds = Array.from(new Set([...likedIds, videoId]));
+            localStorage.setItem('valuvid_liked_video_ids', JSON.stringify(nextLikedIds));
+
+            // 2. Persist cached liked video objects for immediate display in profile liked tab
+            const cachedLikes: VideoItem[] = JSON.parse(localStorage.getItem('valuvid_liked_videos') || '[]');
+            const nextCached = [updatedVideo, ...cachedLikes.filter((item) => item.id !== videoId)];
+            localStorage.setItem('valuvid_liked_videos', JSON.stringify(nextCached));
+          } catch {}
+
+          // 3. Persist local user videos & cached feed videos if applicable
+          try {
+            const localVideos: VideoItem[] = JSON.parse(localStorage.getItem('valuvid_user_videos') || '[]');
+            const updated = localVideos.map((lv) => (lv.id === videoId ? updatedVideo : lv));
+            localStorage.setItem('valuvid_user_videos', JSON.stringify(updated));
+          } catch {}
+
+          try {
+            const cachedVideos: VideoItem[] = JSON.parse(localStorage.getItem('valuvid_cached_feed_videos') || '[]');
+            const updatedCached = cachedVideos.map((cv) => (cv.id === videoId ? updatedVideo : cv));
+            localStorage.setItem('valuvid_cached_feed_videos', JSON.stringify(updatedCached));
+          } catch {}
+
+          // 4. Persist to Supabase Database with unique user like record
+          const userKey = authUser?.id || currentUser?.username || currentUser?.id || 'guest';
+          saveLikeRecordInSupabase(userKey, videoId, true, nextLikes).then((res) => {
+            if (typeof res?.likes === 'number' && res.likes > nextLikes) {
+              setVideos((latest) =>
+                latest.map((item) =>
+                  item.id === videoId
+                    ? { ...item, stats: { ...item.stats, likes: res.likes } }
+                    : item
+                )
+              );
+            }
+          });
+
+          return updatedVideo;
+        }
+        return v;
+      })
+    );
+  }, [authUser, currentUser]);
 
   const toggleFollowCreator = useCallback((creatorIdOrUsername: string) => {
     if (!creatorIdOrUsername) return;
@@ -1748,27 +2144,27 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       return clean !== targetUsername && clean !== targetId;
     });
 
-    // If following, add canonical username and target ID (guaranteed only ONCE)
-    if (willFollow) {
+    // If following, add canonical targetUsername once (never duplicate with targetId)
+    if (willFollow && targetUsername) {
       nextFollowed.push(targetUsername);
-      if (targetId && targetId !== targetUsername) {
-        nextFollowed.push(targetId);
-      }
     }
 
-    try {
-      localStorage.setItem('valuvid_followed_creators', JSON.stringify(nextFollowed));
-    } catch {}
-
-    // 3. Calculate EXACT real following count for currentUser (unique creators followed)
-    const uniqueFollowedUsernames = Array.from(
+    // Deduplicate to canonical usernames
+    nextFollowed = Array.from(
       new Set(
         nextFollowed
           .map((x) => x.toLowerCase().trim().replace(/^@/, ''))
           .filter((x) => x && x !== myUsername && x !== myId)
       )
     );
-    const realFollowingCount = uniqueFollowedUsernames.length;
+
+    try {
+      localStorage.setItem('valuvid_followed_creators', JSON.stringify(nextFollowed));
+    } catch {}
+    setFollowedCreators(nextFollowed);
+
+    // 3. Calculate EXACT real following count for currentUser (unique creators followed)
+    const realFollowingCount = nextFollowed.length;
 
     setCurrentUser((prev) => {
       const updated = {
@@ -1807,8 +2203,33 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     const displayTarget = matchedVideo?.creator?.username || targetUsername;
     setShareToast(willFollow ? `Now following @${displayTarget}! 🎉` : `Unfollowed @${displayTarget}`);
 
-    // 6. Persist follower change to Supabase with dedicated follow record
-    saveFollowRecordInSupabase(myUsername || myId || 'user', targetUsername, willFollow);
+    // 6. Persist follower change to Supabase with dedicated follow record and sync authoritative counts
+    saveFollowRecordInSupabase(myUsername || myId || 'user', targetUsername, willFollow).then((res) => {
+      if (!res.success) return;
+      setCurrentUser((prev) => {
+        const updated = { ...prev, following: res.followerFollowing };
+        try {
+          localStorage.setItem('valuvid_user_profile', JSON.stringify(updated));
+        } catch {}
+        return updated;
+      });
+      setVideos((prev) =>
+        prev.map((v) => {
+          const cUser = (v.creator?.username || '').toLowerCase().replace(/^@/, '');
+          const cId = (v.creator?.id || '').toLowerCase();
+          if (cUser === targetUsername || cId === targetId || cId === targetUsername) {
+            return {
+              ...v,
+              creator: {
+                ...v.creator,
+                followers: res.targetFollowers,
+              },
+            };
+          }
+          return v;
+        })
+      );
+    });
   }, [videos, currentUser]);
 
   const sendTip = useCallback((videoId: string, amountGHS: number, message?: string): boolean => {
@@ -1851,6 +2272,48 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     );
 
     const targetVideo = videos.find((v) => v.id === videoId);
+    const creatorTakeGHS = Number((amountGHS * 0.92).toFixed(2));
+
+    // If the tipped creator is currentUser, credit their wallet & profile earnings
+    if (targetVideo && (
+      (targetVideo.creator.username || '').toLowerCase() === (currentUser.username || '').toLowerCase() ||
+      (targetVideo.creator.id && targetVideo.creator.id === currentUser.id)
+    )) {
+      setWallet((w) => {
+        const nextTips = Number(((w.creatorTipsEarned || 0) + creatorTakeGHS).toFixed(2));
+        const nextBalance = Number((w.balanceGHS + creatorTakeGHS).toFixed(2));
+        return {
+          ...w,
+          balanceGHS: nextBalance,
+          balanceUSD: Number((nextBalance * GHS_TO_USD_RATE).toFixed(2)),
+          creatorTipsEarned: nextTips,
+        };
+      });
+      setCurrentUser((prev) => {
+        const updated = {
+          ...prev,
+          totalTipsEarned: Number(((prev.totalTipsEarned || 0) + creatorTakeGHS).toFixed(2)),
+        };
+        try {
+          localStorage.setItem('valuvid_user_profile', JSON.stringify(updated));
+        } catch {}
+        return updated;
+      });
+
+      const receiveTx: TransactionItem = {
+        id: `tx-tip-rec-${Date.now()}`,
+        type: 'tip_received',
+        title: `Community Tip Received (+GHS ${creatorTakeGHS.toFixed(2)})`,
+        subtitle: message ? `"${message}"` : `Direct creator support on "${targetVideo.title}"`,
+        amountGHS: creatorTakeGHS,
+        timestamp: 'Just now',
+        status: 'completed',
+        method: 'In-App Wallet',
+        referenceId: `REC-${Math.floor(10000 + Math.random() * 90000)}`,
+      };
+      setTransactions((prev) => [receiveTx, ...prev]);
+      recordTransactionToSupabase(receiveTx);
+    }
 
     // Record transaction
     const newTx: TransactionItem = {
@@ -1949,6 +2412,41 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     return true;
   }, [videos, wallet.balanceGHS]);
 
+  const backPredictionWithWallet = useCallback((predId: string, predTitle: string, amountGHS: number = 1.00): boolean => {
+    if (wallet.balanceGHS < amountGHS) {
+      return false;
+    }
+
+    sounds.playCoinTip();
+
+    // Deduct real cash from user wallet
+    setWallet((w) => {
+      const nextGHS = Number((w.balanceGHS - amountGHS).toFixed(2));
+      return {
+        ...w,
+        balanceGHS: nextGHS,
+        balanceUSD: Number((nextGHS * GHS_TO_USD_RATE).toFixed(2)),
+      };
+    });
+
+    // Record real transaction
+    const newTx: TransactionItem = {
+      id: `tx-pred-${Date.now()}`,
+      type: 'prediction_backing',
+      title: 'Backed Community Prediction Pool',
+      subtitle: `Staked GHS ${amountGHS.toFixed(2)} on "${predTitle.slice(0, 32)}..."`,
+      amountGHS: -amountGHS,
+      timestamp: 'Just now',
+      status: 'completed',
+      method: 'In-App ValuWallet',
+      referenceId: `PRED-${Math.floor(10000 + Math.random() * 90000)}`,
+    };
+    setTransactions((prev) => [newTx, ...prev]);
+    recordTransactionToSupabase(newTx);
+
+    return true;
+  }, [wallet.balanceGHS]);
+
   const processCashout = useCallback((methodId: string, amountGHS: number, customRef?: string): boolean => {
     // 1. Minimum withdrawal threshold check (GHS 50.00)
     if (amountGHS < 50.00) {
@@ -1962,12 +2460,12 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       return false;
     }
 
-    // 3. Withdrawal frequency limits (1x/month for Free accounts, 2x/week for Subscribed Pro)
+    // 3. Withdrawal frequency limits (1x/month for Free accounts, 1x/week for Subscribed Pro)
     const now = Date.now();
     const THIRTY_DAYS_MS = 30 * 24 * 60 * 60 * 1000;
     const SEVEN_DAYS_MS = 7 * 24 * 60 * 60 * 1000;
     const periodMs = isProMember ? SEVEN_DAYS_MS : THIRTY_DAYS_MS;
-    const maxPerPeriod = isProMember ? 2 : 1;
+    const maxPerPeriod = 1; // 1x/month for Free, 1x/week for Pro
     const recent = cashoutTimestamps.filter((ts) => (now - ts) < periodMs);
 
     if (recent.length >= maxPerPeriod) {
@@ -1983,7 +2481,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
       alert(
         isProMember
-          ? `Weekly withdrawal limit reached (2 withdrawals per 7 days for Pro Members).\n\nYour next withdrawal window opens on: ${formattedDate}.`
+          ? `Weekly withdrawal limit reached (1 withdrawal per 7 days for Pro Members).\n\nYour next withdrawal window opens on: ${formattedDate}.`
           : `Monthly withdrawal limit reached (1 withdrawal per 30 days for Free tier accounts).\n\nYour next withdrawal window opens on: ${formattedDate}.\n\nUpgrade to ValuVid Pro to withdraw anytime weekly!`
       );
       return false;
@@ -2002,20 +2500,14 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       };
     });
 
-    // Tier-based liquidity handling: Free creators queue into a safe 24-48h batch payout window ('pending'),
-    // while Pro Creator Tier members get instant expedited priority rails ('completed')
-    const isPendingQueue = !isProMember;
-    const txStatus: 'pending' | 'completed' = isPendingQueue ? 'pending' : 'completed';
+    // All cashout requests enter the 24-hour review & payout queue ('pending')
+    const txStatus: 'pending' | 'completed' = 'pending';
 
     const newTx: TransactionItem = {
       id: `tx-cashout-${Date.now()}`,
       type: 'cashout',
-      title: isPendingQueue
-        ? `Cashout to ${method?.name || 'Mobile Money'} (Processing)`
-        : `Instant Cashout to ${method?.name || 'Mobile Money'}`,
-      subtitle: isPendingQueue
-        ? `Scheduled Batch Queue (Within 24-48 Hours) • To ${method?.accountNumber || 'Primary Channel'}`
-        : `Dispatched to ${method?.accountNumber || 'Primary Channel'} (${method?.accountHolder || 'User'})`,
+      title: `Cashout Request (${method?.name || 'Mobile Money'})`,
+      subtitle: `Processing within 24 hours • To ${method?.accountNumber || 'Primary Channel'} (${method?.accountHolder || currentUser.name || 'User'})`,
       amountGHS: -amountGHS,
       timestamp: 'Just now',
       status: txStatus,
@@ -2023,9 +2515,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       referenceId: customRef || `CSH-${Math.floor(10000 + Math.random() * 90000)}`,
     };
     setTransactions((prev) => [newTx, ...prev]);
-    recordTransactionToSupabase(newTx);
+    recordTransactionToSupabase(newTx, currentUser.username || currentUser.id);
 
-    // Record cashout timestamp for weekly withdrawal limit tracking
+    // Record cashout timestamp for withdrawal limit tracking
     const updatedTimestamps = [...recent, now];
     setCashoutTimestamps(updatedTimestamps);
     try {
@@ -2033,32 +2525,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     } catch {}
 
     return true;
-  }, [wallet.balanceGHS, payoutMethods, cashoutTimestamps, isProMember]);
-
-  // Automatic fulfillment of pending cashouts once liquidity float/funds replenish
-  useEffect(() => {
-    const hasPending = transactions.some((t) => t.type === 'cashout' && t.status === 'pending');
-    if (!hasPending) return;
-
-    // After batch window or float available, complete pending cashouts automatically
-    const timer = setTimeout(() => {
-      setTransactions((prev) =>
-        prev.map((t) => {
-          if (t.type === 'cashout' && t.status === 'pending') {
-            return {
-              ...t,
-              status: 'completed',
-              title: t.title.replace(' (Processing)', ' (Completed)'),
-              subtitle: t.subtitle.replace('Scheduled Batch Queue (Within 24-48 Hours)', 'Dispatched via Batch Escrow Float'),
-            };
-          }
-          return t;
-        })
-      );
-    }, 45000);
-
-    return () => clearTimeout(timer);
-  }, [transactions]);
+  }, [wallet.balanceGHS, payoutMethods, cashoutTimestamps, isProMember, currentUser]);
 
   const addFundsToWallet = useCallback((amountGHS: number, referenceId?: string, paymentMethod?: string) => {
     sounds.playCoinTip();
@@ -2188,13 +2655,28 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     setVideos((prev) =>
       prev.map((v) => {
         if (v.id === videoId) {
-          return {
+          const nextComments = (v.stats?.comments || 0) + 1;
+          const updated = {
             ...v,
             stats: {
               ...v.stats,
-              comments: v.stats.comments + 1,
+              comments: nextComments,
             },
           };
+
+          try {
+            const localVideos: VideoItem[] = JSON.parse(localStorage.getItem('valuvid_user_videos') || '[]');
+            const updatedLocal = localVideos.map((lv) => (lv.id === videoId ? updated : lv));
+            localStorage.setItem('valuvid_user_videos', JSON.stringify(updatedLocal));
+          } catch {}
+
+          try {
+            const cachedVideos: VideoItem[] = JSON.parse(localStorage.getItem('valuvid_cached_feed_videos') || '[]');
+            const updatedCached = cachedVideos.map((cv) => (cv.id === videoId ? updated : cv));
+            localStorage.setItem('valuvid_cached_feed_videos', JSON.stringify(updatedCached));
+          } catch {}
+
+          return updated;
         }
         return v;
       })
@@ -2211,23 +2693,38 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       await saveMediaBlob('latest_upload', newVideoData.fileBlob);
       if (newVideoData.videoUrl) {
         cacheLiveVideoUrl(videoId, newVideoData.videoUrl);
+        cacheLiveVideoUrl('latest_upload', newVideoData.videoUrl);
       }
     }
 
-    // Ensure videoUrl is universally streamable across all user devices (convert local blob to persistent Data URL if needed)
+    // Ensure videoUrl is universally streamable across all user devices (HTTP/HTTPS cloud storage URL)
     let persistentVideoUrl = newVideoData.videoUrl || '';
-    if ((!persistentVideoUrl || persistentVideoUrl.startsWith('blob:')) && newVideoData.fileBlob) {
+    const isCloudHttpUrl = persistentVideoUrl.startsWith('http://') || persistentVideoUrl.startsWith('https://');
+    if (!isCloudHttpUrl && newVideoData.fileBlob) {
       try {
-        persistentVideoUrl = await fileToDataUrl(newVideoData.fileBlob);
+        const uploadRes = await uploadMediaToSupabase(newVideoData.fileBlob, `video_${videoId}.mp4`);
+        if (uploadRes?.url && (uploadRes.url.startsWith('http://') || uploadRes.url.startsWith('https://'))) {
+          persistentVideoUrl = uploadRes.url;
+          cacheLiveVideoUrl(videoId, persistentVideoUrl);
+        } else if (uploadRes?.url) {
+          persistentVideoUrl = uploadRes.url;
+        }
       } catch (err) {
-        console.warn('Failed to convert fileBlob to data URL:', err);
+        console.warn('[AppContext] Cloud upload retry failed:', err);
       }
+    }
+
+    let finalThumb = newVideoData.thumbnailUrl || '';
+    // Ensure the video thumbnail NEVER falls back to a profile avatar picture or unsplash stock
+    if (finalThumb.includes('unsplash.com') || finalThumb.includes('default-avatar') || finalThumb.includes('/default-avatar')) {
+      finalThumb = '';
     }
 
     const createdVideo: VideoItem = {
       id: videoId,
+      createdAt: new Date().toISOString(),
       videoUrl: persistentVideoUrl || newVideoData.videoUrl || '',
-      thumbnailUrl: newVideoData.thumbnailUrl || (currentUser.avatar || 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=600&auto=format&fit=crop&q=80'),
+      thumbnailUrl: finalThumb,
       title: newVideoData.title || 'New ValuVid Creation',
       caption: newVideoData.caption || 'Fresh drop on ValuVid! 🇬🇭 #valuvid',
       hashtags: newVideoData.hashtags || ['valuvid', 'creator'],
@@ -2267,12 +2764,14 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     try {
       const localVideos: VideoItem[] = JSON.parse(localStorage.getItem('valuvid_user_videos') || '[]');
       const filtered = localVideos.filter((v) => v.id !== videoId);
-      // Prevent localStorage 5MB quota exhaustion by keeping heavy raw base64 data in IndexedDB
+      // Preserve cloud URL (https://...) and short URLs; only strip raw base64 data URLs > 500k to prevent quota error
       const safeVideo = {
         ...createdVideo,
-        videoUrl: (persistentVideoUrl && persistentVideoUrl.length > 500000) ? '' : persistentVideoUrl,
-        thumbnailUrl: (createdVideo.thumbnailUrl && createdVideo.thumbnailUrl.length > 500000)
-          ? (currentUser.avatar || '/default-avatar.jpg')
+        videoUrl: (persistentVideoUrl && persistentVideoUrl.startsWith('data:') && persistentVideoUrl.length > 500000)
+          ? ''
+          : (persistentVideoUrl || newVideoData.videoUrl || ''),
+        thumbnailUrl: (createdVideo.thumbnailUrl && createdVideo.thumbnailUrl.startsWith('data:') && createdVideo.thumbnailUrl.length > 500000)
+          ? ''
           : createdVideo.thumbnailUrl,
       };
       localStorage.setItem('valuvid_user_videos', JSON.stringify([safeVideo, ...filtered]));
@@ -2285,9 +2784,18 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     setCurrentVideoIndex(0);
     setActiveTab('feed');
 
-    // Asynchronously persist to Supabase Database
-    saveVideoToSupabase(createdVideo);
-  }, [currentUser]);
+    // Persist to Supabase Database (never send ephemeral blob: URLs to DB)
+    const dbVideoPayload: VideoItem = {
+      ...createdVideo,
+      videoUrl: createdVideo.videoUrl.startsWith('blob:') ? '' : createdVideo.videoUrl,
+      thumbnailUrl: (createdVideo.thumbnailUrl || '').startsWith('blob:') ? '' : createdVideo.thumbnailUrl,
+    };
+    const saveRes = await saveVideoToSupabase(dbVideoPayload);
+    if (!saveRes.success) {
+      console.warn('[AppContext] Initial saveVideoToSupabase failed, retrying once...', saveRes.error);
+      await saveVideoToSupabase(dbVideoPayload);
+    }
+  }, [currentUser, authUser]);
 
   const updateVideo = useCallback(async (videoId: string, updates: Partial<VideoItem>): Promise<boolean> => {
     sounds.playLikePop();
@@ -2335,11 +2843,64 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     } catch {}
 
     setVideos((prev) => prev.filter((v) => v.id !== videoId));
+    setPinnedVideoIds((prev) => {
+      if (!prev.includes(videoId)) return prev;
+      const next = prev.filter((id) => id !== videoId);
+      const cleanU = (currentUser?.username || '').trim().toLowerCase().replace(/^@/, '');
+      try {
+        if (cleanU) localStorage.setItem(`valuvid_pinned_videos_${cleanU}`, JSON.stringify(next));
+      } catch {}
+      if (cleanU && cleanU !== 'creator') {
+        savePinnedVideosInSupabase(cleanU, next, currentUser);
+      }
+      return next;
+    });
 
     await deleteVideoFromSupabase(videoId);
     setShareToast('Video permanently deleted 🗑️');
     return true;
-  }, []);
+  }, [currentUser]);
+
+  const togglePinVideo = useCallback((videoId: string) => {
+    if (!videoId) return;
+    sounds.playLikePop();
+    const cleanU = (currentUser?.username || '').trim().toLowerCase().replace(/^@/, '');
+    const isAlreadyPinned = pinnedVideoIds.includes(videoId);
+
+    if (!isAlreadyPinned && pinnedVideoIds.length >= 3) {
+      setShareToast('You can pin up to 3 best videos. Unpin one first to swap.');
+      return;
+    }
+
+    const nextPinned = isAlreadyPinned
+      ? pinnedVideoIds.filter((id) => id !== videoId)
+      : [videoId, ...pinnedVideoIds].slice(0, 3);
+
+    setPinnedVideoIds(nextPinned);
+    setCurrentUser((prev) => {
+      const updated = { ...prev, pinnedVideoIds: nextPinned };
+      try {
+        localStorage.setItem('valuvid_user_profile', JSON.stringify(updated));
+      } catch {}
+      return updated;
+    });
+
+    try {
+      if (cleanU) {
+        localStorage.setItem(`valuvid_pinned_videos_${cleanU}`, JSON.stringify(nextPinned));
+      }
+    } catch {}
+
+    if (cleanU && cleanU !== 'creator') {
+      savePinnedVideosInSupabase(cleanU, nextPinned, currentUser);
+    }
+
+    setShareToast(
+      isAlreadyPinned
+        ? 'Unpinned video from profile'
+        : `Pinned as Best Video (${nextPinned.length}/3) 📌`
+    );
+  }, [pinnedVideoIds, currentUser]);
 
   const shareVideoWithRewardLink = useCallback((video: VideoItem) => {
     openShareModal(video);
@@ -2513,12 +3074,21 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       // Fetch live stats, followed creators, and liked videos from Supabase
       fetchUserProfileFromSupabase(userHandle).then((profile) => {
         if (profile) {
+          const remotePinned = Array.isArray((profile as any).pinnedVideoIds)
+            ? (profile as any).pinnedVideoIds.slice(0, 3)
+            : [];
+          setPinnedVideoIds(remotePinned);
+          try {
+            const cleanH = userHandle.trim().toLowerCase().replace(/^@/, '');
+            if (cleanH) localStorage.setItem(`valuvid_pinned_videos_${cleanH}`, JSON.stringify(remotePinned));
+          } catch {}
           setCurrentUser((prev) => {
             const up = {
               ...prev,
               followers: profile.followers,
               following: profile.following,
               likes: profile.likes,
+              pinnedVideoIds: remotePinned,
             };
             try {
               localStorage.setItem('valuvid_user_profile', JSON.stringify(up));
@@ -2529,25 +3099,57 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         }
       }).catch(() => {});
 
-      fetchUserLikedVideoIdsFromSupabase(userHandle).then((likedIds) => {
-        if (likedIds && likedIds.length > 0) {
-          try {
-            const currentLiked: string[] = JSON.parse(localStorage.getItem('valuvid_liked_video_ids') || '[]');
-            const merged = Array.from(new Set([...currentLiked, ...likedIds]));
-            localStorage.setItem('valuvid_liked_video_ids', JSON.stringify(merged));
-          } catch {}
-        }
+      // Reset previous user's local like/follow flags before syncing the newly signed-in user's state
+      try {
+        localStorage.removeItem('valuvid_liked_video_ids');
+        localStorage.removeItem('valuvid_liked_videos');
+        localStorage.removeItem('valuvid_followed_creators');
+      } catch {}
+      setFollowedCreators([]);
+      setVideos((prev) =>
+        prev.map((v) => ({
+          ...v,
+          isLiked: false,
+          creator: { ...v.creator, isFollowing: false },
+        }))
+      );
+
+      fetchUserLikedVideoIdsFromSupabase(res.user?.id || userHandle, userHandle).then((likedIds) => {
+        const cleanLikedIds = Array.isArray(likedIds) ? likedIds : [];
+        try {
+          localStorage.setItem('valuvid_liked_video_ids', JSON.stringify(cleanLikedIds));
+        } catch {}
+        const likedSet = new Set(cleanLikedIds);
+        setVideos((prev) =>
+          prev.map((v) => ({
+            ...v,
+            isLiked: likedSet.has(v.id),
+          }))
+        );
       }).catch(() => {});
 
       fetchFollowingListFromSupabase(userHandle).then((followingList: any[]) => {
-        if (followingList && followingList.length > 0) {
-          try {
-            const currentFollowed: string[] = JSON.parse(localStorage.getItem('valuvid_followed_creators') || '[]');
-            const newFollowed = followingList.map((f: any) => f.username);
-            const merged = Array.from(new Set([...currentFollowed, ...newFollowed]));
-            localStorage.setItem('valuvid_followed_creators', JSON.stringify(merged));
-          } catch {}
-        }
+        const newFollowed = Array.isArray(followingList)
+          ? followingList.map((f: any) => (f.username || '').toLowerCase().replace(/^@/, '')).filter(Boolean)
+          : [];
+        try {
+          localStorage.setItem('valuvid_followed_creators', JSON.stringify(newFollowed));
+        } catch {}
+        setFollowedCreators(newFollowed);
+        const followedSet = new Set(newFollowed);
+        setVideos((prev) =>
+          prev.map((v) => {
+            const cUser = (v.creator?.username || '').toLowerCase().replace(/^@/, '');
+            const cId = (v.creator?.id || '').toLowerCase();
+            return {
+              ...v,
+              creator: {
+                ...v.creator,
+                isFollowing: followedSet.has(cUser) || (cId ? followedSet.has(cId) : false),
+              },
+            };
+          })
+        );
       }).catch(() => {});
       setAuthModalOpen(false);
       setShareToast(`Welcome back, ${userName}!`);
@@ -2628,7 +3230,19 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           localStorage.setItem('valuvid_custom_profile', JSON.stringify(newCurrentUser));
           localStorage.setItem('valuvid_user_wallet', JSON.stringify(DEFAULT_WALLET));
           localStorage.setItem('valuvid_transactions', JSON.stringify([]));
+          localStorage.removeItem('valuvid_liked_video_ids');
+          localStorage.removeItem('valuvid_liked_videos');
+          localStorage.removeItem('valuvid_followed_creators');
         } catch {}
+        setFollowedCreators([]);
+        setPinnedVideoIds([]);
+        setVideos((prev) =>
+          prev.map((v) => ({
+            ...v,
+            isLiked: false,
+            creator: { ...v.creator, isFollowing: false },
+          }))
+        );
         setAuthModalOpen(false);
         setShareToast(`Account created! Welcome to ValuVid 🚀`);
         sounds.playSuccessPayout();
@@ -2728,34 +3342,23 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       localStorage.removeItem('valuvid_is_logged_in');
       localStorage.removeItem('valuvid_user_profile');
       localStorage.removeItem('valuvid_custom_profile');
+      localStorage.removeItem('valuvid_liked_video_ids');
+      localStorage.removeItem('valuvid_liked_videos');
+      localStorage.removeItem('valuvid_followed_creators');
     } catch {}
     setAuthUser(null);
     setIsLoggedIn(false);
     setCurrentUser(INITIAL_USER);
+    setFollowedCreators([]);
+    setPinnedVideoIds([]);
+    setVideos((prev) =>
+      prev.map((v) => ({
+        ...v,
+        isLiked: false,
+        creator: { ...v.creator, isFollowing: false },
+      }))
+    );
     setShareToast('Signed out of account');
-    sounds.playLikePop();
-  }, []);
-
-  const loginAsDemoUser = useCallback(() => {
-    setCurrentUser({
-      id: 'demo-creator-1',
-      name: 'Emmanuel Osei',
-      username: 'emmanuel_creator',
-      email: 'emmanuel@valuvid.test',
-      avatar: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=200&auto=format&fit=crop&q=80',
-      bio: 'Digital story-teller & tech creator based in Accra 🇬🇭. Building on ValuVid.',
-      followers: 0,
-      following: 0,
-      likes: 0,
-      totalTipsEarned: 0,
-      verified: true,
-      isHumanVerified: true,
-      authenticityScore: 100,
-      certificates: [],
-    });
-    setIsLoggedIn(true);
-    setAuthModalOpen(false);
-    setShareToast('Switched to Demo Creator Mode');
     sounds.playLikePop();
   }, []);
 
@@ -2764,6 +3367,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       value={{
         activeTab,
         setActiveTab: handleSetActiveTab,
+        navBadges,
+        clearNavBadge,
         feedFilter,
         setFeedFilter,
         videos,
@@ -2772,12 +3377,15 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         refreshVideosFromSupabase,
         currentVideoIndex,
         setCurrentVideoIndex,
+        requestedVideoId,
+        clearRequestedVideoId,
         discoverSearchQuery,
         setDiscoverSearchQuery,
         selectedCreatorProfile,
         openCreatorProfile,
         closeCreatorProfile,
         playVideo,
+        recordVideoView,
         currentUser,
         wallet,
         transactions,
@@ -2799,7 +3407,6 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         loginUser,
         signupUser,
         logoutUser,
-        loginAsDemoUser,
         updateUserProfile,
         tipModalVideo,
         openTipModal,
@@ -2869,9 +3476,13 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         setTheme,
         toggleTheme,
         toggleLikeVideo,
+        likeVideo,
+        followedCreators,
+        isFollowingCreator,
         toggleFollowCreator,
         sendTip,
         unlockContent,
+        backPredictionWithWallet,
         processCashout,
         addFundsToWallet,
         addPayoutMethod,
@@ -2881,6 +3492,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         publishNewVideo,
         updateVideo,
         deleteVideo,
+        pinnedVideoIds,
+        togglePinVideo,
         shareVideoWithRewardLink,
         products,
         orders,

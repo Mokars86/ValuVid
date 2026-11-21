@@ -3,6 +3,7 @@ import confetti from 'canvas-confetti';
 import { Coins, Heart, Sparkles, X, CheckCircle, ShieldCheck, Plus, Smartphone, Zap, Loader2 } from 'lucide-react';
 import { useApp } from '../../context/AppContext';
 import { launchPaystackPayment } from '../../services/paystackService';
+import { getUserAvatar } from '../../utils/userDirectory';
 
 export const QuickTipModal: React.FC = () => {
   const { tipModalVideo, closeTipModal, sendTip, wallet, addFundsToWallet, currentUser, theme } = useApp();
@@ -14,6 +15,17 @@ export const QuickTipModal: React.FC = () => {
   const [momoProvider, setMomoProvider] = useState<'mtn' | 'telecel'>('mtn');
   const [topUpToast, setTopUpToast] = useState<string | null>(null);
   const [isProcessingPaystack, setIsProcessingPaystack] = useState(false);
+  const mountTimeRef = React.useRef<number>(Date.now());
+
+  React.useEffect(() => {
+    mountTimeRef.current = Date.now();
+  }, [tipModalVideo]);
+
+  const handleBackdropClick = (e: React.MouseEvent) => {
+    if (e.target !== e.currentTarget) return;
+    if (Date.now() - mountTimeRef.current < 350) return;
+    closeTipModal();
+  };
 
   if (!tipModalVideo) return null;
 
@@ -126,7 +138,10 @@ export const QuickTipModal: React.FC = () => {
   };
 
   return (
-    <div className={`fixed inset-0 z-50 ${isLight ? 'bg-black/60' : 'bg-black/85'} backdrop-blur-md flex items-center justify-center p-4 sm:p-6 animate-fade-in select-none`}>
+    <div 
+      onClick={handleBackdropClick}
+      className={`fixed inset-0 z-[70] ${isLight ? 'bg-black/60' : 'bg-black/85'} backdrop-blur-md flex items-center justify-center p-4 sm:p-6 animate-fade-in select-none`}
+    >
       <div className={`w-full max-w-sm ${
         isLight ? 'bg-white border-slate-200 text-slate-900 shadow-2xl' : 'bg-[#070E1B] border-amber-500/30 text-white shadow-2xl'
       } border rounded-3xl p-5 flex flex-col gap-3.5 max-h-[85vh] overflow-y-auto`}>
@@ -162,7 +177,7 @@ export const QuickTipModal: React.FC = () => {
             </div>
             <h4 className={`text-base font-bold ${isLight ? 'text-slate-900' : 'text-white'}`}>Tip Sent Successfully!</h4>
             <p className={`text-xs mt-1 ${isLight ? 'text-amber-800 font-semibold' : 'text-amber-300'}`}>
-              @{tipModalVideo.creator.username} received GHS {creatorTakeGHS} directly into their ValuWallet.
+              @{tipModalVideo.creator?.username || 'Creator'} received GHS {creatorTakeGHS} directly into their ValuWallet.
             </p>
             <span className={`text-[10px] mt-2 ${isLight ? 'text-slate-500' : 'text-neutral-400'}`}>
               Platform service fee (8%): GHS {platformFeeGHS}
@@ -175,13 +190,16 @@ export const QuickTipModal: React.FC = () => {
               isLight ? 'bg-slate-50 border-slate-200' : 'bg-neutral-950 border-neutral-800'
             }`}>
               <img
-                src={tipModalVideo.creator.avatar}
-                alt={tipModalVideo.creator.username}
+                src={getUserAvatar(tipModalVideo.creator?.avatar, tipModalVideo.creator?.name || tipModalVideo.creator?.username)}
+                alt={tipModalVideo.creator?.username || 'Creator'}
+                onError={(e) => {
+                  (e.currentTarget as HTMLImageElement).src = '/default-avatar.jpg';
+                }}
                 className="w-10 h-10 rounded-full object-cover border border-amber-400/40"
               />
               <div className="truncate flex-1">
                 <div className={`text-xs font-bold truncate flex items-center gap-1 ${isLight ? 'text-slate-900' : 'text-white'}`}>
-                  <span>@{tipModalVideo.creator.username}</span>
+                  <span>@{tipModalVideo.creator?.username || 'Creator'}</span>
                   <span className="text-[9px] bg-amber-500/20 text-amber-700 px-1 rounded font-bold">Creator</span>
                 </div>
                 <div className={`text-[10px] truncate ${isLight ? 'text-slate-500' : 'text-neutral-400'}`}>

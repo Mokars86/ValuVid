@@ -1,5 +1,6 @@
 import { VideoItem } from '../types';
 import seedVideos from './seedVideosList.json';
+import { isTestUserOrMockVideo } from '../utils/userDirectory';
 
 /**
  * Helper to strip out legacy mock product tags from videos.
@@ -50,7 +51,7 @@ export const INITIAL_COMMUNITY_VIDEOS: VideoItem[] = (seedVideos as any[]).map((
   };
 });
 
-const COMMUNITY_CLEAN_BUILD_VERSION = 'valuvid_clean_community_v5';
+const COMMUNITY_CLEAN_BUILD_VERSION = 'valuvid_clean_community_v8';
 
 /**
  * Helper to get the initial feed list from real user uploads, seed community videos, and cached cloud videos.
@@ -80,10 +81,7 @@ export function getInitialFeedVideos(currentUsername?: string): VideoItem[] {
           !v.id.startsWith('comm-vid') &&
           v.id !== 'vid-user-1793762676066' &&
           v.id !== 'vid-user-1793960000000' &&
-          v.id !== 'test_follow_record' &&
-          !v.id.startsWith('test') &&
-          !v.id.startsWith('test_') &&
-          !(v.title || '').toLowerCase().includes('test follow')
+          !isTestUserOrMockVideo(v)
       )
       .map(sanitizeVideoItem);
 
@@ -106,10 +104,7 @@ export function getInitialFeedVideos(currentUsername?: string): VideoItem[] {
           !v.id.startsWith('comm-vid') &&
           v.id !== 'vid-user-1793762676066' &&
           v.id !== 'vid-user-1793960000000' &&
-          v.id !== 'test_follow_record' &&
-          !v.id.startsWith('test') &&
-          !v.id.startsWith('test_') &&
-          !(v.title || '').toLowerCase().includes('test follow')
+          !isTestUserOrMockVideo(v)
       )
       .map(sanitizeVideoItem);
 

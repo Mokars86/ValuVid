@@ -1,9 +1,18 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { X, Eye, Search, Check, Plus, ShieldCheck, Sparkles, UserCheck } from 'lucide-react';
 import { VideoItem, Creator } from '../../types';
 import { useApp } from '../../context/AppContext';
-import { getUserAvatar } from '../../utils/userDirectory';
+import { getUserAvatar, isMockAccount } from '../../utils/userDirectory';
 import { formatCompactNumber } from '../../utils/formatNumber';
+import { fetchVideoViewersFromSupabase } from '../../services/supabaseClient';
+
+const isValidRealViewer = (v: { username?: string; name?: string }) => {
+  const uname = (v.username || '').trim().toLowerCase().replace(/^@/, '');
+  const name = (v.name || '').trim().toLowerCase();
+  if (!uname || isMockAccount(uname)) return false;
+  if (name === 'valuvid creator' || name === 'valuvid viewer') return false;
+  return true;
+};
 
 export interface VideoViewer {
   userId: string;
@@ -25,40 +34,72 @@ export const VideoViewersModal: React.FC<VideoViewersModalProps> = ({
   onClose,
   video,
 }) => {
-  const { theme, currentUser, toggleFollowCreator, openCreatorProfile } = useApp();
+  const { theme, currentUser, isFollowingCreator, toggleFollowCreator, openCreatorProfile } = useApp();
   const [searchQuery, setSearchQuery] = useState('');
+  const [cloudViewers, setCloudViewers] = useState<VideoViewer[]>([]);
 
-  // Read recorded real viewers for this video from localStorage
+  // Fetch real viewers from Supabase so viewers across all devices are merged
+  useEffect(() => {
+    if (!video?.id || !isOpen) return;
+    fetchVideoViewersFromSupabase(video.id).then((records) => {
+      if (Array.isArray(records) && records.length > 0) {
+        setCloudViewers(records);
+      }
+    });
+  }, [video?.id, isOpen]);
+
+  // Read recorded real viewers for this video from both Supabase cloud and localStorage
   const viewers: VideoViewer[] = useMemo(() => {
     if (!video) return [];
+    const map = new Map<string, VideoViewer>();
+
+    // 1. Add cloud viewers from Supabase (strictly real users)
+    cloudViewers.forEach((v) => {
+      if (!isValidRealViewer(v)) return;
+      const u = (v.username || '').toLowerCase().replace(/^@/, '');
+      if (u) map.set(u, v);
+    });
+
+    // 2. Add local viewers from localStorage (strictly real users)
     try {
       const stored = localStorage.getItem(`valuvid_viewers_${video.id}`);
       if (stored) {
         const parsed: VideoViewer[] = JSON.parse(stored);
-        if (Array.isArray(parsed) && parsed.length > 0) {
-          return parsed;
+        if (Array.isArray(parsed)) {
+          parsed.forEach((v) => {
+            if (!isValidRealViewer(v)) return;
+            const u = (v.username || '').toLowerCase().replace(/^@/, '');
+            if (u && !map.has(u)) map.set(u, v);
+          });
         }
       }
     } catch {}
 
-    // If no viewer records exist yet, generate real creator engagement entries if video has views
-    const totalViews = video.stats?.views || 1;
-    const list: VideoViewer[] = [];
-
-    // Current viewer record
-    if (currentUser && currentUser.username) {
-      list.push({
-        userId: currentUser.id || currentUser.username,
-        username: currentUser.username,
-        name: currentUser.name || currentUser.username,
-        avatar: getUserAvatar(currentUser.avatar, currentUser.username),
-        watchedAt: 'Just now',
-        watchDurationSec: 15,
-      });
+    // 3. Current viewer record (if current user is a real logged-in user who watched this video and is not the creator)
+    const curU = (currentUser?.username || '').toLowerCase().replace(/^@/, '');
+    const isOwner = Boolean(
+      (curU && video.creator?.username && video.creator.username.toLowerCase().replace(/^@/, '') === curU) ||
+      (currentUser?.id && video.creator?.id && video.creator.id === currentUser.id)
+    );
+    if (!isOwner && curU && isValidRealViewer(currentUser)) {
+      try {
+        const viewedKey = `valuvid_viewed_videos_${curU}`;
+        const viewedList: string[] = JSON.parse(localStorage.getItem(viewedKey) || '[]');
+        if (viewedList.includes(video.id) && !map.has(curU)) {
+          map.set(curU, {
+            userId: currentUser.id || curU,
+            username: currentUser.username,
+            name: currentUser.name || currentUser.username,
+            avatar: getUserAvatar(currentUser.avatar, currentUser.username),
+            watchedAt: 'Just now',
+            watchDurationSec: 15,
+          });
+        }
+      } catch {}
     }
 
-    return list;
-  }, [video, currentUser]);
+    return Array.from(map.values());
+  }, [video, currentUser, cloudViewers]);
 
   const filteredViewers = useMemo(() => {
     const q = searchQuery.trim().toLowerCase().replace(/^@/, '');
@@ -94,7 +135,7 @@ export const VideoViewersModal: React.FC<VideoViewersModalProps> = ({
                 Video Viewers
               </h3>
               <p className={`text-[11px] ${theme === 'light' ? 'text-slate-500' : 'text-neutral-400'}`}>
-                {formatCompactNumber(video.stats?.views || viewers.length)} total {video.stats?.views === 1 ? 'view' : 'views'}
+                {formatCompactNumber(Math.max(video.stats?.views || 0, viewers.length))} total {Math.max(video.stats?.views || 0, viewers.length) === 1 ? 'view' : 'views'}
               </p>
             </div>
           </div>
@@ -116,10 +157,10 @@ export const VideoViewersModal: React.FC<VideoViewersModalProps> = ({
         }`}>
           <div className="w-10 h-14 rounded-lg overflow-hidden bg-black shrink-0 border border-amber-400/30">
             <img
-              src={video.thumbnailUrl || '/default-avatar.svg'}
+              src={video.thumbnailUrl || '/default-avatar.jpg'}
               alt={video.title}
               onError={(e) => {
-                (e.currentTarget as HTMLImageElement).src = '/default-avatar.svg';
+                (e.currentTarget as HTMLImageElement).src = '/default-avatar.jpg';
               }}
               className="w-full h-full object-cover"
             />
@@ -161,7 +202,16 @@ export const VideoViewersModal: React.FC<VideoViewersModalProps> = ({
         <div className="flex-1 overflow-y-auto px-4 py-2 divide-y divide-neutral-800/20 max-h-96">
           {filteredViewers.length > 0 ? (
             filteredViewers.map((viewer) => {
-              const isMe = viewer.username.toLowerCase() === currentUser?.username.toLowerCase();
+              const viewerUsername = (viewer.username || '').toLowerCase().replace(/^@/, '');
+              const viewerId = (viewer.userId || '').toLowerCase();
+              const myUsername = (currentUser?.username || '').toLowerCase().replace(/^@/, '');
+              const myId = (currentUser?.id || '').toLowerCase();
+              const isMe = Boolean(
+                (myUsername && myUsername !== 'creator' && viewerUsername === myUsername) ||
+                (myId && myId !== 'user_current' && (viewerId === myId || viewerUsername === myId))
+              );
+              const isFollowed = isFollowingCreator(viewer.username) || isFollowingCreator(viewer.userId);
+
               return (
                 <div
                   key={`${viewer.userId}-${viewer.watchedAt}`}
@@ -183,7 +233,7 @@ export const VideoViewersModal: React.FC<VideoViewersModalProps> = ({
                       src={getUserAvatar(viewer.avatar, viewer.name || viewer.username)}
                       alt={viewer.name}
                       onError={(e) => {
-                        (e.currentTarget as HTMLImageElement).src = '/default-avatar.svg';
+                        (e.currentTarget as HTMLImageElement).src = '/default-avatar.jpg';
                       }}
                       className="w-10 h-10 rounded-full object-cover border border-amber-500/30 group-hover:scale-105 transition-transform shrink-0"
                     />
@@ -211,11 +261,29 @@ export const VideoViewersModal: React.FC<VideoViewersModalProps> = ({
 
                   {!isMe && (
                     <button
-                      onClick={() => toggleFollowCreator(viewer.username)}
-                      className="px-2.5 py-1 rounded-xl text-xs font-bold bg-amber-500 hover:bg-amber-400 text-neutral-950 shadow-sm active:scale-95 transition-all flex items-center gap-1 shrink-0"
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        toggleFollowCreator(viewer.username || viewer.userId);
+                      }}
+                      className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 shrink-0 active:scale-95 cursor-pointer shadow-sm ${
+                        isFollowed
+                          ? 'bg-neutral-800 hover:bg-neutral-700 text-emerald-400 border border-emerald-500/40'
+                          : 'bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-400 hover:to-amber-500 text-neutral-950 font-black shadow-amber-500/20'
+                      }`}
+                      title={isFollowed ? 'Click to unfollow' : 'Follow user'}
                     >
-                      <Plus className="w-3 h-3 stroke-[2.5]" />
-                      <span>Follow</span>
+                      {isFollowed ? (
+                        <>
+                          <Check className="w-3.5 h-3.5 stroke-[3] text-emerald-400" />
+                          <span>Following</span>
+                        </>
+                      ) : (
+                        <>
+                          <Plus className="w-3.5 h-3.5 stroke-[3]" />
+                          <span>Follow</span>
+                        </>
+                      )}
                     </button>
                   )}
                 </div>
@@ -239,23 +307,30 @@ export const VideoViewersModal: React.FC<VideoViewersModalProps> = ({
 };
 
 /**
- * Record a real viewer when they watch a video
+ * Record a real viewer when they watch a video (strictly 1 view record per unique user)
  */
 export function recordViewerForVideo(videoId: string, viewer: Partial<Creator> | null): void {
-  if (!videoId || !viewer || !viewer.username) return;
+  if (!videoId || !viewer || !isValidRealViewer(viewer)) return;
   try {
     const key = `valuvid_viewers_${videoId}`;
     const raw = localStorage.getItem(key);
     const existing: VideoViewer[] = raw ? JSON.parse(raw) : [];
 
-    const cleanUsername = viewer.username.toLowerCase().replace(/^@/, '');
-    const alreadyRecorded = existing.some((v) => v.username.toLowerCase().replace(/^@/, '') === cleanUsername);
+    const username = (viewer.username || viewer.name || viewer.id || 'viewer').toString();
+    const cleanUsername = username.toLowerCase().replace(/^@/, '');
+    const cleanId = (viewer.id || cleanUsername).toLowerCase().replace(/^@/, '');
+
+    const alreadyRecorded = existing.some((v) => {
+      const vUser = (v.username || '').toLowerCase().replace(/^@/, '');
+      const vId = (v.userId || '').toLowerCase().replace(/^@/, '');
+      return vUser === cleanUsername || vId === cleanId;
+    });
 
     if (!alreadyRecorded) {
       existing.unshift({
         userId: viewer.id || cleanUsername,
-        username: viewer.username,
-        name: viewer.name || viewer.username,
+        username: viewer.username || `@${cleanUsername}`,
+        name: viewer.name || viewer.username || 'ValuVid Viewer',
         avatar: getUserAvatar(viewer.avatar, viewer.username),
         watchedAt: 'Just now',
         watchDurationSec: 15,

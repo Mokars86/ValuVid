@@ -3,23 +3,25 @@ import { getRegisteredIdentities } from './deviceFingerprint';
 
 const KNOWN_USERS_STORAGE_KEY = 'valuvid_all_known_users';
 
+export const APP_DEFAULT_AVATAR = '/default-avatar.jpg';
+
 /**
- * Universal clean profile picture resolver.
- * Ensures no user ever displays the company app logo or broken mock image paths.
+ * Universal profile picture resolver.
+ * Defaults to the official ValuVid app logo (/default-avatar.jpg) unless the user has uploaded their preferred image.
  */
 export function getUserAvatar(avatar?: string, _nameOrUsername?: string): string {
   if (
     avatar &&
-    avatar !== '/default-avatar.jpg' &&
-    !avatar.includes('/default-avatar.jpg') &&
+    avatar !== '/default-avatar.svg' &&
+    !avatar.includes('default-avatar.svg') &&
     !avatar.includes('unsplash.com') &&
     !avatar.includes('bottts') &&
     !avatar.includes('dicebear.com') &&
-    (avatar.startsWith('data:image') || avatar.startsWith('http://') || avatar.startsWith('https://') || avatar === '/default-avatar.svg')
+    (avatar.startsWith('data:image') || avatar.startsWith('http://') || avatar.startsWith('https://') || avatar === '/default-avatar.jpg' || avatar === '/logo.png')
   ) {
     return avatar;
   }
-  return '/default-avatar.svg';
+  return APP_DEFAULT_AVATAR;
 }
 
 /**
@@ -27,19 +29,53 @@ export function getUserAvatar(avatar?: string, _nameOrUsername?: string): string
  */
 export const COMMUNITY_CREATORS: Creator[] = [];
 
-const isMockAccount = (uname?: string) => {
+export const isMockAccount = (uname?: string) => {
   if (!uname) return true;
-  const u = uname.toLowerCase().replace(/^@/, '');
+  const u = uname.toLowerCase().replace(/^@/, '').trim();
   return (
+    u === 'creator' ||
+    u === 'valuvid creator' ||
+    u === 'valuvid' ||
     u === 'emmanuel_creator' ||
+    u === 'emmanuel osei' ||
     u === 'kwame_code' ||
     u === 'user_current' ||
     u === 'user_fintech' ||
     u === 'demo-creator-1' ||
+    u === 'demo' ||
+    u === 'mock' ||
+    u === 'guest' ||
+    u === 'viewer' ||
     u === 'deleted' ||
     u.startsWith('test')
   );
 };
+
+/**
+ * Universal validator to exclude test user videos, mock creator uploads, and placeholder feed items.
+ */
+export function isTestUserOrMockVideo(v: any): boolean {
+  if (!v) return true;
+  const username = (v.creator?.username || v.creator_data?.username || '').toLowerCase().replace(/^@/, '').trim();
+  const creatorName = (v.creator?.name || v.creator_data?.name || '').toLowerCase().trim();
+  const title = (v.title || '').toLowerCase().trim();
+  const id = (v.id || '').toLowerCase().trim();
+  const caption = (v.caption || '').toLowerCase().trim();
+
+  return (
+    isMockAccount(username) ||
+    creatorName === 'valuvid creator' ||
+    creatorName.startsWith('test') ||
+    title.includes('valuvid studio creation') ||
+    title.includes('test follow') ||
+    caption.includes('test follow') ||
+    id.startsWith('test') ||
+    id.startsWith('vid-sample') ||
+    id === 'test_follow_record' ||
+    id === 'vid-user-1' ||
+    id === 'vid-masterclass-1'
+  );
+}
 
 /**
  * Get all known creators and users across the app (STRICTLY REAL REGISTERED USERS)
@@ -106,6 +142,7 @@ export function getAllKnownUsers(): Creator[] {
 export function recordKnownUser(creator: Partial<Creator> & { username: string }): void {
   try {
     const cleanUsername = creator.username.trim().toLowerCase().replace(/^@/, '');
+    if (!cleanUsername || isMockAccount(cleanUsername)) return;
     const currentList = getAllKnownUsers();
     const existingIndex = currentList.findIndex((u) => u.username.toLowerCase() === cleanUsername);
 

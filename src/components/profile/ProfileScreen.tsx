@@ -3,6 +3,7 @@ import {
   Settings, 
   Grid3X3, 
   Heart, 
+  MessageCircle,
   Lock, 
   Coins, 
   Eye, 
@@ -36,17 +37,20 @@ import {
   Moon,
   ShoppingBag,
   Package,
-  Plus
+  Plus,
+  Pin
 } from 'lucide-react';
 import { useApp } from '../../context/AppContext';
 import { VideoItem } from '../../types';
 import { sounds } from '../../utils/soundEffects';
 import { MilestoneCertificateModal, MilestoneCertificateData } from './MilestoneCertificateModal';
+import { PublishedVideoThumbnail } from '../common/PublishedVideoThumbnail';
 import { ProfileShareModal } from './ProfileShareModal';
 import { FollowersListModal } from './FollowersListModal';
 import { VideoViewersModal } from '../feed/VideoViewersModal';
 import { formatCompactNumber } from '../../utils/formatNumber';
-import { getDeletedVideoIds } from '../../services/supabaseClient';
+import { getDeletedVideoIds, uploadMediaToSupabase } from '../../services/supabaseClient';
+import { getUserAvatar } from '../../utils/userDirectory';
 
 export const ProfileScreen: React.FC = () => {
   const { 
@@ -72,11 +76,16 @@ export const ProfileScreen: React.FC = () => {
     theme,
     toggleTheme,
     products,
+    recordVideoView,
     orders,
     openProductCheckout,
     confirmDelivery,
     addProduct,
-    deleteProduct
+    deleteProduct,
+    transactions,
+    comments,
+    pinnedVideoIds,
+    togglePinVideo
   } = useApp();
 
   const [activeTab, setActiveTabState] = useState<'videos' | 'store' | 'liked' | 'saved' | 'unlocked' | 'trophies'>('videos');
@@ -93,6 +102,11 @@ export const ProfileScreen: React.FC = () => {
   const [newProdType, setNewProdType] = useState<'physical' | 'digital'>('physical');
   const [newProdDelivery, setNewProdDelivery] = useState('Accra & Kumasi express dispatch within 24-48 hours');
   const [newProdImage, setNewProdImage] = useState('');
+  const [productPhotoPreview, setProductPhotoPreview] = useState<string>('');
+  const [isUploadingProductPhoto, setIsUploadingProductPhoto] = useState(false);
+  const [showManualUrlInput, setShowManualUrlInput] = useState(false);
+  const productPhotoInputRef = useRef<HTMLInputElement | null>(null);
+
   const [displayName, setDisplayName] = useState(currentUser.name);
   const [username, setUsername] = useState(currentUser.username);
   const [bioText, setBioText] = useState(currentUser.bio);
@@ -144,6 +158,52 @@ export const ProfileScreen: React.FC = () => {
     reader.readAsDataURL(file);
   };
 
+  const handleProductPhotoSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    const reader = new FileReader();
+    reader.onload = (event) => {
+      const img = new Image();
+      img.onload = () => {
+        const canvas = document.createElement('canvas');
+        const maxDim = 800;
+        let w = img.width;
+        let h = img.height;
+        if (w > maxDim || h > maxDim) {
+          const ratio = Math.min(maxDim / w, maxDim / h);
+          w = Math.round(w * ratio);
+          h = Math.round(h * ratio);
+        }
+        canvas.width = w;
+        canvas.height = h;
+        const ctx = canvas.getContext('2d');
+        if (ctx) {
+          ctx.drawImage(img, 0, 0, w, h);
+          const dataUrl = canvas.toDataURL('image/jpeg', 0.82);
+          setProductPhotoPreview(dataUrl);
+          setNewProdImage(dataUrl);
+          sounds.playLikePop();
+        }
+      };
+      img.src = event.target?.result as string;
+    };
+    reader.readAsDataURL(file);
+
+    // Also attempt cloud storage upload for persistent cross-device URL
+    setIsUploadingProductPhoto(true);
+    uploadMediaToSupabase(file, `prod_${Date.now()}_${file.name}`)
+      .then(({ url: remoteUrl, isRemote }) => {
+        setIsUploadingProductPhoto(false);
+        if (isRemote && remoteUrl) {
+          setNewProdImage(remoteUrl);
+        }
+      })
+      .catch(() => {
+        setIsUploadingProductPhoto(false);
+      });
+  };
+
   // Content Management (Edit & Delete uploaded videos)
   const [editingVideo, setEditingVideo] = useState<VideoItem | null>(null);
   const [editTitle, setEditTitle] = useState('');
@@ -154,10 +214,17 @@ export const ProfileScreen: React.FC = () => {
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
   const [followListTab, setFollowListTab] = useState<'followers' | 'following' | null>(null);
 
-  // Filter videos strictly uploaded by this user (Excluding mock, seed, or deleted videos)
+  // Filter videos strictly uploaded by this user (Excluding deleted videos, reliably matching user uploads)
   const myVideos = useMemo(() => {
     const deletedIds = getDeletedVideoIds();
-    return videos.filter((v) => {
+    const curUser = (currentUser?.username || '').toLowerCase().trim();
+    const curEmail = (currentUser?.email || '').toLowerCase().trim();
+    const curId = currentUser?.id || '';
+    const authId = authUser?.id || '';
+    const authEmail = (authUser?.email || '').toLowerCase().trim();
+    const authMetaUser = (authUser?.user_metadata?.username || '').toLowerCase().trim();
+
+    const owned = videos.filter((v) => {
       if (
         deletedIds.includes(v.id) ||
         v.caption === '[DELETED]' ||
@@ -166,18 +233,31 @@ export const ProfileScreen: React.FC = () => {
       ) {
         return false;
       }
-      if (v.id.startsWith('comm-vid') || v.id.startsWith('vid-sample') || v.id.startsWith('vid-masterclass')) {
-        return false;
-      }
-      if (authUser?.id && v.creator?.id === authUser.id) return true;
-      if (currentUser?.id && v.creator?.id === currentUser.id) return true;
-      if (authUser?.email && v.creator?.email && v.creator.email.toLowerCase() === authUser.email.toLowerCase()) return true;
-      if (currentUser?.email && v.creator?.email && v.creator.email.toLowerCase() === currentUser.email.toLowerCase()) return true;
-      if (currentUser?.username && v.creator?.username && v.creator.username.toLowerCase() === currentUser.username.toLowerCase()) return true;
-      if (authUser?.user_metadata?.username && v.creator?.username && v.creator.username.toLowerCase() === authUser.user_metadata.username.toLowerCase()) return true;
-      return false;
+
+      const vCreatorUser = (v.creator?.username || '').toLowerCase().trim();
+      const vCreatorEmail = (v.creator?.email || '').toLowerCase().trim();
+      const vCreatorId = v.creator?.id || '';
+
+      const isDirectOwner =
+        Boolean(authId && vCreatorId === authId) ||
+        Boolean(curId && vCreatorId === curId) ||
+        Boolean(authEmail && vCreatorEmail === authEmail) ||
+        Boolean(curEmail && vCreatorEmail === curEmail) ||
+        Boolean(curUser && vCreatorUser === curUser) ||
+        Boolean(authMetaUser && vCreatorUser === authMetaUser);
+
+      return isDirectOwner;
     });
-  }, [videos, currentUser, authUser]);
+
+    // Sort pinned best videos first (preserving pin order, max 3)
+    const pinOrder = new Map<string, number>();
+    pinnedVideoIds.slice(0, 3).forEach((id, idx) => pinOrder.set(id, idx));
+    return [...owned].sort((a, b) => {
+      const aPin = pinOrder.has(a.id) ? pinOrder.get(a.id)! : 999;
+      const bPin = pinOrder.has(b.id) ? pinOrder.get(b.id)! : 999;
+      return aPin - bPin;
+    });
+  }, [videos, currentUser, authUser, pinnedVideoIds]);
 
   const likedVideos = useMemo(() => {
     const fromState = videos.filter((v) => v.isLiked);
@@ -260,16 +340,52 @@ export const ProfileScreen: React.FC = () => {
   }, [myVideos]);
 
   const totalMyComments = useMemo(() => {
-    return myVideos.reduce((sum: number, v: VideoItem) => sum + (v.stats?.comments || 0), 0);
-  }, [myVideos]);
+    return myVideos.reduce((sum: number, v: VideoItem) => {
+      const liveCmts = (comments[v.id] || []).length;
+      return sum + Math.max(v.stats?.comments || 0, liveCmts);
+    }, 0);
+  }, [myVideos, comments]);
 
   const totalMyTips = useMemo(() => {
     return myVideos.reduce((sum: number, v: VideoItem) => sum + (v.stats?.tipsTotalGHS || 0), 0);
   }, [myVideos]);
 
   const realTipsEarned = useMemo(() => {
-    return Number((currentUser.totalTipsEarned || totalMyTips || 0).toFixed(2));
-  }, [currentUser.totalTipsEarned, totalMyTips]);
+    return Number(Math.max(currentUser.totalTipsEarned || 0, totalMyTips || 0, wallet.creatorTipsEarned || 0).toFixed(2));
+  }, [currentUser.totalTipsEarned, totalMyTips, wallet.creatorTipsEarned]);
+
+  // Comprehensive, real-time Creator Yield calculation from all genuine revenue streams
+  const estimatedCreatorYield = useMemo(() => {
+    // 1. Attention & View Yield: GHS 0.04 per verified view from Brand Escrow pool
+    const viewEarnings = Number((totalMyViews * 0.04).toFixed(2));
+
+    // 2. Direct Community Tips Received
+    const tipsFromVideos = totalMyTips;
+    const tipsFromProfile = currentUser.totalTipsEarned || 0;
+    const tipsFromWallet = wallet.creatorTipsEarned || 0;
+    const tipsFromTx = Array.isArray(transactions)
+      ? transactions
+          .filter((tx) => tx.type === 'tip_received')
+          .reduce((sum, tx) => sum + Math.abs(tx.amountGHS || 0), 0)
+      : 0;
+    const directTips = Math.max(tipsFromVideos, tipsFromProfile, tipsFromWallet, tipsFromTx);
+
+    // 3. ValuShop Sales Yield
+    const curU = (currentUser?.username || '').toLowerCase().trim();
+    const shopSales = myOrders
+      .filter((o) => (o.sellerUsername || '').toLowerCase().trim() === curU && o.status !== 'refunded')
+      .reduce((sum, o) => sum + (o.amountGHS || 0), 0);
+
+    // 4. Paywall Masterclass Unlocks
+    const unlockEarnings = myVideos
+      .filter((v) => v.isPayPerUnlock)
+      .reduce((sum, v) => sum + ((v.unlockPriceGHS || 5.0) * 0.92 * (v.stats?.views ? Math.max(1, Math.floor(v.stats.views / 5)) : 0)), 0);
+
+    // Total aggregate yield
+    const totalYield = viewEarnings + directTips + shopSales + unlockEarnings;
+
+    return Number(totalYield.toFixed(2));
+  }, [totalMyViews, totalMyTips, currentUser.totalTipsEarned, currentUser.username, wallet.creatorTipsEarned, transactions, myOrders, myVideos]);
 
   const realFollowersCount = useMemo(() => {
     return typeof currentUser.followers === 'number' ? Math.max(0, currentUser.followers) : 0;
@@ -621,6 +737,7 @@ export const ProfileScreen: React.FC = () => {
   };
 
   const handleSelectVideo = (video: VideoItem) => {
+    recordVideoView(video.id, currentUser);
     playVideo(video);
   };
 
@@ -643,9 +760,9 @@ export const ProfileScreen: React.FC = () => {
   };
 
   return (
-    <div className={`w-full h-full ${theme === 'light' ? 'bg-[#F8FAFC] text-slate-900' : 'bg-neutral-950 text-white'} flex flex-col overflow-y-auto pb-20 select-none transition-colors duration-200`}>
+    <div className={`w-full h-full ${theme === 'light' ? 'bg-[#F8FAFC] text-slate-900' : 'bg-neutral-950 text-white'} flex flex-col overflow-y-auto pb-[max(5.5rem,calc(env(safe-area-inset-bottom,0px)+5rem))] select-none transition-colors duration-200`}>
       {/* HEADER NAV */}
-      <div className={`sticky top-0 z-20 ${theme === 'light' ? 'bg-white/95 border-slate-200' : 'bg-neutral-950/95 border-neutral-900'} backdrop-blur-md px-4 pt-8 sm:pt-4 pb-2.5 border-b flex items-center justify-between transition-colors`}>
+      <div className={`sticky top-0 z-20 ${theme === 'light' ? 'bg-white/95 border-slate-200' : 'bg-neutral-950/95 border-neutral-900'} backdrop-blur-md px-4 pt-[max(2.25rem,calc(env(safe-area-inset-top,0px)+0.5rem))] sm:pt-4 pb-2.5 border-b flex items-center justify-between transition-colors`}>
         <div className="flex flex-col">
           <div className="text-sm font-bold flex items-center gap-1.5">
             <span className={theme === 'light' ? 'text-slate-900' : 'text-white'}>@{currentUser.username}</span>
@@ -729,148 +846,186 @@ export const ProfileScreen: React.FC = () => {
           </div>
         )}
 
-        {/* PROFILE HEADER AREA */}
-        <div className="flex flex-col items-center text-center">
-          <div 
-            onClick={() => headerAvatarInputRef.current?.click()}
-            className="relative mb-2.5 group cursor-pointer"
-            title="Click to change profile picture"
-          >
-            {/* ValuVid Champion Golden Frame (only if creator holds verified milestone) */}
-            {isChampion && (
-              <>
-                <div className="absolute -inset-1 rounded-full bg-gradient-to-r from-amber-400 via-yellow-300 to-amber-500 animate-pulse-glow opacity-80 blur-[2px]" />
-                <div className="absolute -top-1.5 -right-1 w-6 h-6 rounded-full bg-gradient-to-tr from-amber-400 to-yellow-300 flex items-center justify-center text-neutral-950 shadow-md border-2 border-[#050608] z-10" title="ValuVid Milestone Leaderboard Champion">
-                  <Crown className="w-3.5 h-3.5 fill-neutral-950" />
+        {/* MODERN HERO BANNER + GLASSMORPHIC PROFILE CARD */}
+        <div className={`relative rounded-3xl border overflow-hidden transition-colors ${
+          theme === 'light'
+            ? 'bg-white/90 border-slate-200/90 shadow-lg shadow-slate-200/50'
+            : 'bg-neutral-900/70 border-neutral-800/90 shadow-2xl shadow-black/40 backdrop-blur-xl'
+        }`}>
+          {/* Hero Cover Banner */}
+          <div className={`h-24 sm:h-28 w-full relative overflow-hidden ${
+            theme === 'light'
+              ? 'bg-gradient-to-r from-sky-200 via-amber-100 to-indigo-200'
+              : 'bg-gradient-to-r from-[#00B2FE]/30 via-amber-500/20 to-purple-600/30'
+          }`}>
+            <div className="absolute -top-10 -left-10 w-36 h-36 rounded-full bg-[#00B2FE]/25 blur-2xl" />
+            <div className="absolute -bottom-10 -right-10 w-40 h-40 rounded-full bg-amber-500/25 blur-2xl" />
+            <div className="absolute top-3 right-3 flex items-center gap-1.5">
+              <span className={`text-[10px] font-mono font-bold px-2.5 py-1 rounded-full backdrop-blur-md border ${
+                theme === 'light'
+                  ? 'bg-white/80 border-slate-200/80 text-slate-700'
+                  : 'bg-black/45 border-white/15 text-neutral-200'
+              }`}>
+                @{currentUser.username}
+              </span>
+            </div>
+          </div>
+
+          {/* Profile Content */}
+          <div className="px-4 pb-5 -mt-11 flex flex-col items-center text-center relative z-10">
+            <div 
+              onClick={() => headerAvatarInputRef.current?.click()}
+              className="relative mb-2.5 group cursor-pointer"
+              title="Click to change profile picture"
+            >
+              {/* ValuVid Champion Golden Frame (only if creator holds verified milestone) */}
+              {isChampion && (
+                <>
+                  <div className="absolute -inset-1 rounded-full bg-gradient-to-r from-amber-400 via-yellow-300 to-amber-500 animate-pulse-glow opacity-80 blur-[2px]" />
+                  <div className="absolute -top-1.5 -right-1 w-6 h-6 rounded-full bg-gradient-to-tr from-amber-400 to-yellow-300 flex items-center justify-center text-neutral-950 shadow-md border-2 border-[#050608] z-10" title="ValuVid Milestone Leaderboard Champion">
+                    <Crown className="w-3.5 h-3.5 fill-neutral-950" />
+                  </div>
+                </>
+              )}
+              <div className={`relative w-22 h-22 rounded-full p-[3px] overflow-hidden ring-4 ${
+                theme === 'light' ? 'ring-white' : 'ring-neutral-900'
+              } ${
+                isChampion 
+                  ? 'bg-gradient-to-tr from-amber-400 via-yellow-200 to-amber-600 shadow-xl shadow-amber-500/25' 
+                  : 'bg-gradient-to-tr from-[#00B2FE] via-amber-400 to-[#FF9F0A] shadow-xl shadow-[#00B2FE]/20'
+              }`}>
+                <img
+                  src={getUserAvatar(currentUser.avatar, currentUser.name || currentUser.username)}
+                  alt={currentUser.name}
+                  onError={(e) => {
+                    (e.currentTarget as HTMLImageElement).src = '/default-avatar.jpg';
+                  }}
+                  className="w-full h-full rounded-full object-cover transition-transform group-hover:scale-105"
+                />
+                <div className="absolute inset-0 bg-black/45 rounded-full flex flex-col items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity">
+                  <Camera className="w-5 h-5 text-white" />
+                  <span className="text-[9px] font-bold text-white mt-0.5">Change</span>
                 </div>
-              </>
-            )}
-            <div className={`relative w-20 h-20 rounded-full p-[2.5px] overflow-hidden ${
-              isChampion 
-                ? 'bg-gradient-to-tr from-amber-400 via-yellow-200 to-amber-600 shadow-xl shadow-amber-500/25' 
-                : 'bg-gradient-to-tr from-[#00B2FE] via-amber-400 to-[#FF9F0A] shadow-xl shadow-[#00B2FE]/20'
+              </div>
+
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  headerAvatarInputRef.current?.click();
+                }}
+                className="absolute -bottom-0.5 -right-0.5 bg-gradient-to-tr from-[#00B2FE] to-[#FF9F0A] text-neutral-950 p-1.5 rounded-full border-2 border-neutral-950 shadow-md hover:scale-110 active:scale-95 transition-transform z-10"
+                title="Upload new profile picture"
+              >
+                <Camera className="w-3.5 h-3.5 text-black stroke-[2.5]" />
+              </button>
+            </div>
+
+            <input
+              ref={headerAvatarInputRef}
+              type="file"
+              accept="image/*"
+              className="hidden"
+              onChange={handleAvatarFileChange}
+            />
+
+            <div className="flex items-center justify-center gap-1.5">
+              <h1 className={`text-lg font-extrabold tracking-tight leading-tight ${theme === 'light' ? 'text-slate-900' : 'text-white'}`}>
+                {currentUser.name}
+              </h1>
+              {currentUser.verified && <BadgeCheck className="w-4 h-4 text-amber-500 shrink-0" />}
+            </div>
+            <p className={`text-xs max-w-xs mt-1 leading-relaxed ${theme === 'light' ? 'text-slate-600' : 'text-neutral-400'}`}>
+              {currentUser.bio}
+            </p>
+
+            {/* ACTION PILL BUTTONS */}
+            <div className="flex items-center flex-wrap justify-center gap-2 mt-3.5">
+              <button
+                onClick={() => setEditProfileOpen(true)}
+                className={`px-4 py-1.5 rounded-full ${
+                  theme === 'light'
+                    ? 'bg-slate-100 hover:bg-slate-200 border-slate-200 text-slate-800 shadow-xs'
+                    : 'bg-neutral-800/90 hover:bg-neutral-700 border-neutral-700 text-white'
+                } border text-xs font-bold flex items-center gap-1.5 transition-all active:scale-95`}
+              >
+                <Edit3 className="w-3.5 h-3.5 text-amber-500" />
+                <span>Edit Profile</span>
+              </button>
+              <button
+                onClick={handleShareProfile}
+                className={`px-4 py-1.5 rounded-full ${
+                  theme === 'light'
+                    ? 'bg-slate-100 hover:bg-slate-200 border-slate-200 text-slate-800 shadow-xs'
+                    : 'bg-neutral-800/90 hover:bg-neutral-700 border-neutral-700 text-white'
+                } border text-xs font-bold flex items-center gap-1.5 transition-all active:scale-95`}
+              >
+                <Share2 className="w-3.5 h-3.5 text-cyan-500" />
+                <span>Share</span>
+              </button>
+              <button
+                onClick={() => {
+                  sounds.playLikePop();
+                  setAuthMode(authUser ? 'signin' : 'signup');
+                  setAuthModalOpen(true);
+                }}
+                className={`px-4 py-1.5 rounded-full ${
+                  theme === 'light'
+                    ? 'bg-cyan-50 hover:bg-cyan-100 border-cyan-200 text-cyan-800'
+                    : 'bg-cyan-500/15 hover:bg-cyan-500/25 border-cyan-500/40 text-cyan-300'
+                } border text-xs font-bold flex items-center gap-1.5 transition-all shadow-xs active:scale-95`}
+              >
+                <LogIn className="w-3.5 h-3.5 text-cyan-500" />
+                <span>{authUser ? 'Switch ID' : 'Sign In / Register'}</span>
+              </button>
+            </div>
+
+            {/* UNIFIED GLASSMORPHIC STATS BAR */}
+            <div className={`grid grid-cols-3 w-full mt-4 rounded-2xl border p-2.5 ${
+              theme === 'light'
+                ? 'bg-slate-50/90 border-slate-200/80'
+                : 'bg-neutral-950/60 border-neutral-800/80'
             }`}>
-              <img
-                src={currentUser.avatar}
-                alt={currentUser.name}
-                className="w-full h-full rounded-full object-cover transition-transform group-hover:scale-105"
-              />
-              <div className="absolute inset-0 bg-black/45 rounded-full flex flex-col items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity">
-                <Camera className="w-5 h-5 text-white" />
-                <span className="text-[9px] font-bold text-white mt-0.5">Change</span>
+              <button
+                onClick={() => setFollowListTab('following')}
+                className="flex flex-col items-center justify-center py-1 cursor-pointer group active:scale-95 transition-transform"
+                title="View accounts you are following"
+              >
+                <span className={`text-base font-black group-hover:text-amber-500 transition-colors ${theme === 'light' ? 'text-slate-900' : 'text-white'}`}>
+                  {formatCompactNumber(currentUser.following || 0)}
+                </span>
+                <span className={`text-[10px] font-semibold uppercase tracking-wider ${theme === 'light' ? 'text-slate-500' : 'text-neutral-400'}`}>Following</span>
+              </button>
+              <button
+                onClick={() => setFollowListTab('followers')}
+                className={`flex flex-col items-center justify-center py-1 cursor-pointer group active:scale-95 transition-transform border-x ${
+                  theme === 'light' ? 'border-slate-200' : 'border-neutral-800'
+                }`}
+                title="View your followers"
+              >
+                <span className={`text-base font-black group-hover:text-amber-500 transition-colors ${theme === 'light' ? 'text-slate-900' : 'text-white'}`}>
+                  {formatCompactNumber(realFollowersCount)}
+                </span>
+                <span className={`text-[10px] font-semibold uppercase tracking-wider ${theme === 'light' ? 'text-slate-500' : 'text-neutral-400'}`}>Followers</span>
+              </button>
+              <div className="flex flex-col items-center justify-center py-1">
+                <span className={`text-base font-black ${theme === 'light' ? 'text-slate-900' : 'text-white'}`}>
+                  {formatCompactNumber(totalMyLikes)}
+                </span>
+                <span className={`text-[10px] font-semibold uppercase tracking-wider ${theme === 'light' ? 'text-slate-500' : 'text-neutral-400'}`}>Likes</span>
               </div>
             </div>
 
-            <button
-              type="button"
-              onClick={(e) => {
-                e.stopPropagation();
-                headerAvatarInputRef.current?.click();
-              }}
-              className="absolute -bottom-1 -right-1 bg-gradient-to-tr from-[#00B2FE] to-[#FF9F0A] text-neutral-950 p-1.5 rounded-full border-2 border-neutral-950 shadow-md hover:scale-110 active:scale-95 transition-transform z-10"
-              title="Upload new profile picture"
-            >
-              <Camera className="w-3.5 h-3.5 text-black stroke-[2.5]" />
-            </button>
-          </div>
-
-          <input
-            ref={headerAvatarInputRef}
-            type="file"
-            accept="image/*"
-            className="hidden"
-            onChange={handleAvatarFileChange}
-          />
-
-          <h1 className={`text-base font-bold leading-tight ${theme === 'light' ? 'text-slate-900' : 'text-white'}`}>{currentUser.name}</h1>
-          <p className={`text-xs max-w-xs mt-1 leading-relaxed ${theme === 'light' ? 'text-slate-600' : 'text-neutral-400'}`}>
-            {currentUser.bio}
-          </p>
-
-          {/* EDIT & SHARE & AUTH ACTION BUTTONS */}
-          <div className="flex items-center flex-wrap justify-center gap-2 mt-3">
-            <button
-              onClick={() => setEditProfileOpen(true)}
-              className={`px-3.5 py-1.5 rounded-full ${
-                theme === 'light'
-                  ? 'bg-white hover:bg-slate-100 border-slate-200 text-slate-800 shadow-sm'
-                  : 'bg-neutral-900 hover:bg-neutral-800 border-neutral-800 text-white'
-              } border text-xs font-bold flex items-center gap-1.5 transition-colors`}
-            >
-              <Edit3 className="w-3.5 h-3.5 text-amber-500" />
-              <span>Edit</span>
-            </button>
-            <button
-              onClick={handleShareProfile}
-              className={`px-3.5 py-1.5 rounded-full ${
-                theme === 'light'
-                  ? 'bg-white hover:bg-slate-100 border-slate-200 text-slate-800 shadow-sm'
-                  : 'bg-neutral-900 hover:bg-neutral-800 border-neutral-800 text-white'
-              } border text-xs font-bold flex items-center gap-1.5 transition-colors`}
-            >
-              <Share2 className="w-3.5 h-3.5 text-cyan-500" />
-              <span>Share</span>
-            </button>
-            <button
-              onClick={() => {
-                sounds.playLikePop();
-                setAuthMode(authUser ? 'signin' : 'signup');
-                setAuthModalOpen(true);
-              }}
-              className={`px-3.5 py-1.5 rounded-full ${
-                theme === 'light'
-                  ? 'bg-cyan-50 hover:bg-cyan-100 border-cyan-200 text-cyan-800'
-                  : 'bg-cyan-500/15 hover:bg-cyan-500/25 border-cyan-500/40 text-cyan-300'
-              } border text-xs font-bold flex items-center gap-1.5 transition-colors shadow-sm`}
-            >
-              <LogIn className="w-3.5 h-3.5 text-cyan-500" />
-              <span>{authUser ? 'Switch ID' : 'Sign In / Register'}</span>
-            </button>
-          </div>
-
-          {/* TOTAL COMMUNITY TIPS RECEIVED BADGE */}
-          <div className={`mt-3 flex items-center gap-2 ${
-            theme === 'light'
-              ? 'bg-gradient-to-r from-amber-50 via-amber-100/60 to-yellow-50 border-amber-300 shadow-sm'
-              : 'bg-gradient-to-r from-amber-500/20 via-amber-500/10 to-yellow-500/20 border-amber-400/50 shadow-lg shadow-amber-500/10'
-          } border px-3.5 py-1.5 rounded-full`}>
-            <Coins className="w-4 h-4 text-amber-500" />
-            <span className={`text-xs font-bold ${theme === 'light' ? 'text-amber-800' : 'text-amber-300'}`}>
-              GHS {totalMyTips.toFixed(2)} Community Tips Received
-            </span>
-          </div>
-
-          {/* FOLLOWER / LIKES STATS (TikTok-Style Clickable Pillars) */}
-          <div className={`flex items-center justify-center gap-3 min-[360px]:gap-6 mt-3.5 w-full py-2 border-y ${
-            theme === 'light' ? 'border-slate-200' : 'border-neutral-900'
-          }`}>
-            <button
-              onClick={() => setFollowListTab('following')}
-              className="flex flex-col items-center cursor-pointer group active:scale-95 transition-transform"
-              title="View accounts you are following"
-            >
-              <span className={`text-sm font-bold group-hover:text-amber-500 transition-colors ${theme === 'light' ? 'text-slate-900' : 'text-white'}`}>
-                {formatCompactNumber(currentUser.following || 0)}
+            {/* TOTAL COMMUNITY TIPS RECEIVED BADGE */}
+            <div className={`mt-3 inline-flex items-center gap-2 ${
+              theme === 'light'
+                ? 'bg-gradient-to-r from-amber-50 via-amber-100/70 to-yellow-50 border-amber-300 shadow-xs'
+                : 'bg-gradient-to-r from-amber-500/20 via-amber-500/10 to-yellow-500/20 border-amber-400/40 shadow-lg shadow-amber-500/10'
+            } border px-4 py-1.5 rounded-full`}>
+              <Coins className="w-3.5 h-3.5 text-amber-500" />
+              <span className={`text-xs font-bold ${theme === 'light' ? 'text-amber-800' : 'text-amber-300'}`}>
+                GHS {totalMyTips.toFixed(2)} Community Tips Received
               </span>
-              <span className={`text-[10px] ${theme === 'light' ? 'text-slate-500' : 'text-neutral-400'}`}>Following</span>
-            </button>
-            <div className={`w-px h-6 ${theme === 'light' ? 'bg-slate-200' : 'bg-neutral-800'}`} />
-            <button
-              onClick={() => setFollowListTab('followers')}
-              className="flex flex-col items-center cursor-pointer group active:scale-95 transition-transform"
-              title="View your followers"
-            >
-              <span className={`text-sm font-bold group-hover:text-amber-500 transition-colors ${theme === 'light' ? 'text-slate-900' : 'text-white'}`}>
-                {formatCompactNumber(realFollowersCount)}
-              </span>
-              <span className={`text-[10px] ${theme === 'light' ? 'text-slate-500' : 'text-neutral-400'}`}>Followers</span>
-            </button>
-            <div className={`w-px h-6 ${theme === 'light' ? 'bg-slate-200' : 'bg-neutral-800'}`} />
-            <div className="flex flex-col items-center">
-              <span className={`text-sm font-bold ${theme === 'light' ? 'text-slate-900' : 'text-white'}`}>
-                {formatCompactNumber(totalMyLikes)}
-              </span>
-              <span className={`text-[10px] ${theme === 'light' ? 'text-slate-500' : 'text-neutral-400'}`}>Likes</span>
             </div>
           </div>
         </div>
@@ -888,23 +1043,47 @@ export const ProfileScreen: React.FC = () => {
           </div>
 
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5">
+            {/* Card 1: Est. Creator Yield */}
             <div className={`${theme === 'light' ? 'bg-slate-50 border-slate-200' : 'bg-neutral-950/60 border-neutral-800/80'} p-3 rounded-2xl border`}>
               <span className={`text-[10px] block mb-0.5 ${theme === 'light' ? 'text-slate-500' : 'text-neutral-400'}`}>Est. Creator Yield</span>
               <div className="text-base font-bold text-emerald-500">
-                GHS {(wallet.creatorTipsEarned || totalMyTips).toFixed(2)}
+                GHS {estimatedCreatorYield.toFixed(2)}
               </div>
               <span className={`text-[9px] flex items-center gap-1 mt-0.5 ${theme === 'light' ? 'text-slate-500' : 'text-neutral-500'}`}>
-                <span className="text-emerald-500 font-bold">{myVideos.length}</span> uploads
+                <span className="text-emerald-500 font-bold">{myVideos.length}</span> uploads • Escrow & Tips
               </span>
             </div>
 
+            {/* Card 2: Total Video Views */}
             <div className={`${theme === 'light' ? 'bg-slate-50 border-slate-200' : 'bg-neutral-950/60 border-neutral-800/80'} p-3 rounded-2xl border`}>
               <span className={`text-[10px] block mb-0.5 ${theme === 'light' ? 'text-slate-500' : 'text-neutral-400'}`}>Total Video Views</span>
               <div className={`text-base font-bold ${theme === 'light' ? 'text-slate-900' : 'text-white'}`}>
                 {formatCompactNumber(totalMyViews)}
               </div>
               <span className={`text-[9px] flex items-center gap-1 mt-0.5 ${theme === 'light' ? 'text-slate-500' : 'text-neutral-500'}`}>
-                <span className="text-cyan-500 font-bold">{myVideos.length > 0 ? 'Verified' : 'No views yet'}</span>
+                <span className="text-cyan-500 font-bold">{totalMyViews > 0 ? 'Verified Attention' : 'No views yet'}</span>
+              </span>
+            </div>
+
+            {/* Card 3: Community Tips Received */}
+            <div className={`${theme === 'light' ? 'bg-slate-50 border-slate-200' : 'bg-neutral-950/60 border-neutral-800/80'} p-3 rounded-2xl border`}>
+              <span className={`text-[10px] block mb-0.5 ${theme === 'light' ? 'text-slate-500' : 'text-neutral-400'}`}>Community Tips</span>
+              <div className={`text-base font-bold ${theme === 'light' ? 'text-amber-600' : 'text-amber-400'}`}>
+                GHS {realTipsEarned.toFixed(2)}
+              </div>
+              <span className={`text-[9px] flex items-center gap-1 mt-0.5 ${theme === 'light' ? 'text-slate-500' : 'text-neutral-500'}`}>
+                <span className="text-amber-500 font-bold">{totalMyTips > 0 ? 'MoMo Tips' : 'Direct Support'}</span>
+              </span>
+            </div>
+
+            {/* Card 4: Avg. Engagement */}
+            <div className={`${theme === 'light' ? 'bg-slate-50 border-slate-200' : 'bg-neutral-950/60 border-neutral-800/80'} p-3 rounded-2xl border`}>
+              <span className={`text-[10px] block mb-0.5 ${theme === 'light' ? 'text-slate-500' : 'text-neutral-400'}`}>Avg. Engagement</span>
+              <div className={`text-base font-bold ${theme === 'light' ? 'text-slate-900' : 'text-white'}`}>
+                {totalMyViews > 0 ? (((totalMyLikes + totalMyComments) / totalMyViews) * 100).toFixed(1) : '0.0'}%
+              </div>
+              <span className={`text-[9px] flex items-center gap-1 mt-0.5 ${theme === 'light' ? 'text-slate-500' : 'text-neutral-500'}`}>
+                <span className="text-purple-400 font-bold">{formatCompactNumber(totalMyLikes)}</span> likes • {formatCompactNumber(totalMyComments)} cmts
               </span>
             </div>
           </div>
@@ -913,26 +1092,34 @@ export const ProfileScreen: React.FC = () => {
         {/* VALUVID PRO CARD */}
         <div 
           onClick={() => setShowProModal(true)}
-          className="bg-gradient-to-r from-amber-600/20 via-orange-600/20 to-purple-600/20 border border-amber-500/40 rounded-3xl p-4 cursor-pointer hover:border-amber-400 transition-colors shadow-lg"
+          className={`border rounded-3xl p-4 cursor-pointer transition-colors ${
+            theme === 'light'
+              ? 'bg-gradient-to-r from-amber-50 via-orange-50 to-purple-50 border-amber-300 hover:border-amber-500 shadow-sm'
+              : 'bg-gradient-to-r from-amber-600/20 via-orange-600/20 to-purple-600/20 border-amber-500/40 hover:border-amber-400 shadow-lg'
+          }`}
         >
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-2.5">
-              <div className="w-10 h-10 rounded-2xl bg-gradient-to-tr from-amber-400 to-amber-600 flex items-center justify-center text-neutral-950 font-black shadow-md">
+          <div className="flex items-center justify-between gap-2">
+            <div className="flex items-center gap-2.5 min-w-0">
+              <div className="w-10 h-10 rounded-2xl bg-gradient-to-tr from-amber-400 to-amber-600 flex items-center justify-center text-neutral-950 font-black shadow-md shrink-0">
                 <Crown className="w-5 h-5 text-neutral-950" />
               </div>
-              <div>
-                <div className="flex items-center gap-1.5">
-                  <h3 className="text-xs font-bold text-white">ValuVid Creator Pro</h3>
+              <div className="min-w-0">
+                <div className="flex items-center gap-1.5 flex-wrap">
+                  <h3 className={`text-xs font-bold ${theme === 'light' ? 'text-slate-900' : 'text-white'}`}>ValuVid Creator Pro</h3>
                   {isProMember ? (
                     <span className="text-[9px] bg-amber-400 text-black px-1.5 py-0.2 rounded font-black">ACTIVE</span>
                   ) : (
-                    <span className="text-[9px] bg-amber-500/30 text-amber-300 px-1.5 py-0.2 rounded">GHS 29/mo</span>
+                    <span className={`text-[9px] px-1.5 py-0.2 rounded font-semibold ${
+                      theme === 'light'
+                        ? 'bg-amber-200/80 text-amber-900'
+                        : 'bg-amber-500/30 text-amber-300'
+                    }`}>GHS 29/mo</span>
                   )}
                 </div>
-                <p className="text-[10px] text-neutral-400">Priority video encoding, boost reach & analytics</p>
+                <p className={`text-[10px] ${theme === 'light' ? 'text-slate-600' : 'text-neutral-400'}`}>Priority video encoding, boost reach & analytics</p>
               </div>
             </div>
-            <span className="text-xs font-bold text-amber-400">
+            <span className={`text-xs font-bold shrink-0 ${theme === 'light' ? 'text-amber-700' : 'text-amber-400'}`}>
               {isProMember ? 'Manage' : 'Upgrade →'}
             </span>
           </div>
@@ -1846,68 +2033,118 @@ export const ProfileScreen: React.FC = () => {
             <div>
               {activeTab === 'videos' && (
                 myVideos.length > 0 ? (
-                  <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-5 gap-1.5 sm:gap-2">
-                    {myVideos.map((video: VideoItem) => (
-                      <div
-                        key={video.id}
-                        onClick={() => handleSelectVideo(video)}
-                        className="relative aspect-[9/14] bg-neutral-900 rounded-xl overflow-hidden cursor-pointer group"
-                      >
-                        <img
-                          src={video.thumbnailUrl}
-                          alt={video.title}
-                          className="w-full h-full object-cover group-hover:scale-105 transition-transform"
-                        />
-
-                        {/* Creator Stats / Revenue Analytics */}
-                        <button
-                          type="button"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            openAnalytics(video);
-                          }}
-                          className="absolute top-1 left-1 z-10 px-1.5 py-0.5 rounded-lg bg-black/75 backdrop-blur-md border border-amber-500/40 text-amber-300 hover:text-white hover:bg-amber-500 hover:border-amber-400 text-[9px] font-bold flex items-center gap-1 shadow-md transition-all active:scale-90"
-                          title="View video revenue and analytics"
-                        >
-                          <BarChart3 className="w-2.5 h-2.5" />
-                          <span>Stats</span>
-                        </button>
-
-                        {/* Creator Quick Edit / Delete Overlay Trigger */}
-                        <button
-                          type="button"
-                          onClick={(e) => handleOpenEditVideo(e, video)}
-                          className="absolute top-1 right-1 z-10 px-1.5 py-0.5 rounded-lg bg-black/75 backdrop-blur-md border border-white/20 text-neutral-200 hover:text-white hover:bg-amber-500 hover:border-amber-400 text-[9px] font-bold flex items-center gap-1 shadow-md transition-all active:scale-90"
-                          title="Edit details (title, hashtags, caption) or delete video"
-                        >
-                          <Edit3 className="w-2.5 h-2.5" />
-                          <span>Edit</span>
-                        </button>
-
-                        <div className="absolute bottom-1 inset-x-1 bg-black/80 backdrop-blur-md rounded-md px-1 py-0.5 flex items-center justify-between text-[9px] border border-amber-500/30">
-                          <div className="flex items-center gap-0.5 text-amber-300 font-bold truncate">
-                            <Coins className="w-2.5 h-2.5 shrink-0" />
-                            <span>{(video.stats?.tipsTotalGHS || 0).toFixed(0)}</span>
-                          </div>
-                          <div className="flex items-center gap-0.5 text-rose-400 font-bold" title="Total video likes">
-                            <Heart className="w-2.5 h-2.5 shrink-0 fill-rose-500 text-rose-500" />
-                            <span>{formatCompactNumber(video.stats?.likes || 0)}</span>
-                          </div>
-                          <button
-                            type="button"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              setViewersModalVideo(video);
-                            }}
-                            className="flex items-center gap-0.5 text-cyan-400 hover:text-cyan-300 font-bold active:scale-90 transition-all cursor-pointer p-0.5 rounded"
-                            title="See who watched this video"
-                          >
-                            <Eye className="w-2.5 h-2.5 shrink-0" />
-                            <span>{formatCompactNumber(video.stats?.views || 0)}</span>
-                          </button>
-                        </div>
+                  <div className="flex flex-col gap-2.5">
+                    <div className={`flex items-center justify-between px-3 py-2 rounded-2xl border text-[11px] ${
+                      theme === 'light'
+                        ? 'bg-amber-50/70 border-amber-200 text-amber-900'
+                        : 'bg-neutral-900/70 border-neutral-800 text-neutral-300'
+                    }`}>
+                      <div className="flex items-center gap-1.5 font-semibold">
+                        <Pin className="w-3.5 h-3.5 text-amber-500 shrink-0" />
+                        <span>Pin up to 3 best videos to showcase first</span>
                       </div>
-                    ))}
+                      <span className={`font-black px-2 py-0.5 rounded-full text-[10px] ${
+                        theme === 'light' ? 'bg-amber-200/80 text-amber-900' : 'bg-amber-500/20 text-amber-300'
+                      }`}>
+                        {myVideos.filter((v) => pinnedVideoIds.includes(v.id)).length}/3 Pinned
+                      </span>
+                    </div>
+
+                    <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-5 gap-1.5 sm:gap-2">
+                      {myVideos.map((video: VideoItem) => {
+                        const isPinned = pinnedVideoIds.slice(0, 3).includes(video.id);
+                        return (
+                          <div
+                            key={video.id}
+                            onClick={() => handleSelectVideo(video)}
+                            className={`relative aspect-[9/14] bg-neutral-900 rounded-xl overflow-hidden cursor-pointer group transition-all ${
+                              isPinned ? 'ring-2 ring-amber-400 shadow-lg shadow-amber-500/20' : ''
+                            }`}
+                          >
+                            <PublishedVideoThumbnail
+                              video={video}
+                              alt={video.title}
+                              className="w-full h-full object-cover group-hover:scale-105 transition-transform"
+                            />
+
+                            {/* Top Left: Pinned Badge & Stats */}
+                            <div className="absolute top-1 left-1 z-10 flex flex-col items-start gap-1">
+                              {isPinned && (
+                                <span className="px-1.5 py-0.5 rounded-lg bg-amber-400 text-neutral-950 text-[8px] font-black flex items-center gap-0.5 shadow-md">
+                                  <Pin className="w-2.5 h-2.5 fill-neutral-950" />
+                                  <span>Pinned</span>
+                                </span>
+                              )}
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  openAnalytics(video);
+                                }}
+                                className="px-1.5 py-0.5 rounded-lg bg-black/75 backdrop-blur-md border border-amber-500/40 text-amber-300 hover:text-white hover:bg-amber-500 hover:border-amber-400 text-[9px] font-bold flex items-center gap-1 shadow-md transition-all active:scale-90"
+                                title="View video revenue and analytics"
+                              >
+                                <BarChart3 className="w-2.5 h-2.5" />
+                                <span>Stats</span>
+                              </button>
+                            </div>
+
+                            {/* Top Right: Pin Toggle & Edit */}
+                            <div className="absolute top-1 right-1 z-10 flex items-center gap-1">
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.preventDefault();
+                                  e.stopPropagation();
+                                  togglePinVideo(video.id);
+                                }}
+                                className={`p-1 rounded-lg backdrop-blur-md border text-[9px] font-bold flex items-center justify-center shadow-md transition-all active:scale-90 ${
+                                  isPinned
+                                    ? 'bg-amber-500 border-amber-300 text-neutral-950'
+                                    : 'bg-black/75 border-white/20 text-neutral-200 hover:text-amber-300 hover:border-amber-400'
+                                }`}
+                                title={isPinned ? 'Unpin video from Best 3' : 'Pin as one of your 3 best videos'}
+                              >
+                                <Pin className={`w-2.5 h-2.5 ${isPinned ? 'fill-neutral-950' : ''}`} />
+                              </button>
+                              <button
+                                type="button"
+                                onClick={(e) => handleOpenEditVideo(e, video)}
+                                className="px-1.5 py-0.5 rounded-lg bg-black/75 backdrop-blur-md border border-white/20 text-neutral-200 hover:text-white hover:bg-amber-500 hover:border-amber-400 text-[9px] font-bold flex items-center gap-1 shadow-md transition-all active:scale-90"
+                                title="Edit details (title, hashtags, caption) or delete video"
+                              >
+                                <Edit3 className="w-2.5 h-2.5" />
+                                <span>Edit</span>
+                              </button>
+                            </div>
+
+                            <div className="absolute bottom-1 inset-x-1 bg-black/80 backdrop-blur-md rounded-md px-1.5 py-0.5 flex items-center justify-between text-[9px] border border-amber-500/30">
+                              <div className="flex items-center gap-0.5 text-amber-300 font-bold truncate">
+                                <Coins className="w-2.5 h-2.5 shrink-0" />
+                                <span>{(video.stats?.tipsTotalGHS || 0).toFixed(0)}</span>
+                              </div>
+                              <div className="flex items-center gap-0.5 text-rose-400 font-bold" title="Total video likes">
+                                <Heart className="w-2.5 h-2.5 shrink-0 fill-rose-500 text-rose-500" />
+                                <span>{formatCompactNumber(video.stats?.likes || 0)}</span>
+                              </div>
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.preventDefault();
+                                  e.stopPropagation();
+                                  setViewersModalVideo(video);
+                                }}
+                                className="flex items-center gap-1 text-cyan-300 hover:text-white bg-cyan-950/80 hover:bg-cyan-600/80 border border-cyan-500/40 font-bold active:scale-95 transition-all cursor-pointer px-1.5 py-0.5 rounded shadow-sm"
+                                title="See who watched this video"
+                              >
+                                <Eye className="w-3 h-3 shrink-0 text-cyan-400" />
+                                <span>{formatCompactNumber(video.stats?.views || 0)}</span>
+                              </button>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
                   </div>
                 ) : (
                   <div className={`py-8 text-center text-xs flex flex-col items-center gap-2.5 rounded-2xl border p-6 ${
@@ -2100,8 +2337,8 @@ export const ProfileScreen: React.FC = () => {
                         onClick={() => handleSelectVideo(video)}
                         className="relative aspect-[9/14] bg-neutral-900 rounded-xl overflow-hidden cursor-pointer group border border-amber-500/20"
                       >
-                        <img
-                          src={video.thumbnailUrl}
+                        <PublishedVideoThumbnail
+                          video={video}
                           alt={video.title}
                           className="w-full h-full object-cover group-hover:scale-105 transition-transform"
                         />
@@ -2144,8 +2381,8 @@ export const ProfileScreen: React.FC = () => {
                         onClick={() => handleSelectVideo(video)}
                         className="relative aspect-[9/14] bg-neutral-900 rounded-xl overflow-hidden cursor-pointer group"
                       >
-                        <img
-                          src={video.thumbnailUrl}
+                        <PublishedVideoThumbnail
+                          video={video}
                           alt={video.title}
                           className="w-full h-full object-cover group-hover:scale-105 transition-transform"
                         />
@@ -2185,8 +2422,8 @@ export const ProfileScreen: React.FC = () => {
                         onClick={() => handleSelectVideo(video)}
                         className="relative aspect-[9/14] bg-neutral-900 rounded-xl overflow-hidden cursor-pointer group border border-emerald-500/40"
                       >
-                        <img
-                          src={video.thumbnailUrl}
+                        <PublishedVideoThumbnail
+                          video={video}
                           alt={video.title}
                           className="w-full h-full object-cover group-hover:scale-105 transition-transform"
                         />
@@ -2253,8 +2490,11 @@ export const ProfileScreen: React.FC = () => {
                 title="Click to select a new profile photo"
               >
                 <img
-                  src={avatarPreview || currentUser.avatar}
+                  src={getUserAvatar(avatarPreview || currentUser.avatar, displayName || currentUser.username)}
                   alt={displayName}
+                  onError={(e) => {
+                    (e.currentTarget as HTMLImageElement).src = '/default-avatar.jpg';
+                  }}
                   className="w-full h-full rounded-full object-cover transition-transform group-hover:scale-105"
                 />
                 <div className="absolute inset-0 bg-black/50 rounded-full flex flex-col items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity">
@@ -2387,11 +2627,13 @@ export const ProfileScreen: React.FC = () => {
 
             {/* Video Thumbnail Preview Strip */}
             <div className="flex items-center gap-3 bg-neutral-900/60 p-2.5 rounded-2xl border border-neutral-800">
-              <img
-                src={editingVideo.thumbnailUrl}
-                alt={editingVideo.title}
-                className="w-12 h-16 rounded-xl object-cover shrink-0 border border-neutral-700"
-              />
+              <div className="w-12 h-16 rounded-xl overflow-hidden shrink-0 border border-neutral-700">
+                <PublishedVideoThumbnail
+                  video={editingVideo}
+                  alt={editingVideo.title}
+                  className="w-full h-full object-cover"
+                />
+              </div>
               <div className="min-w-0 flex-1">
                 <h4 className="text-xs font-bold text-white truncate">{editingVideo.title}</h4>
                 <div className="flex items-center gap-2 text-[10px] text-neutral-400 mt-1">
@@ -2544,13 +2786,15 @@ export const ProfileScreen: React.FC = () => {
               const price = parseFloat(newProdPrice);
               if (isNaN(price) || price <= 0) return;
 
+              const finalImage = newProdImage.trim() || productPhotoPreview.trim() || 'https://images.unsplash.com/photo-1523275335684-37898b6baf30?w=500&auto=format&fit=crop&q=60';
+
               addProduct({
                 creatorUsername: currentUser.username,
                 creatorName: currentUser.name,
                 title: newProdTitle.trim(),
                 description: newProdDesc.trim() || 'Available in Ghana',
                 priceGHS: price,
-                imageUrl: newProdImage.trim() || 'https://images.unsplash.com/photo-1523275335684-37898b6baf30?w=500&auto=format&fit=crop&q=60',
+                imageUrl: finalImage,
                 type: newProdType,
                 inStock: true,
                 category: 'store',
@@ -2562,10 +2806,13 @@ export const ProfileScreen: React.FC = () => {
               setNewProdTitle('');
               setNewProdPrice('');
               setNewProdDesc('');
+              setNewProdImage('');
+              setProductPhotoPreview('');
+              setShowManualUrlInput(false);
             }}
-            className={`w-full max-w-md rounded-t-3xl sm:rounded-3xl p-4 sm:p-5 flex flex-col gap-3 shadow-2xl max-h-[90vh] overflow-y-auto ${
+            className={`w-full max-w-md rounded-t-3xl sm:rounded-3xl p-4 sm:p-5 pb-[max(3rem,calc(env(safe-area-inset-bottom)+2rem))] sm:pb-5 flex flex-col gap-3 shadow-2xl max-h-[88vh] overflow-y-auto ${
               theme === 'light' ? 'bg-white border-slate-200 text-slate-900' : 'bg-[#070E1B] border-neutral-800 text-white'
-            } border`}
+            } border mb-2 sm:mb-0`}
           >
             <div className={`flex items-center justify-between pb-2 border-b ${theme === 'light' ? 'border-slate-200' : 'border-neutral-800'}`}>
               <div className="flex items-center gap-2">
@@ -2574,7 +2821,12 @@ export const ProfileScreen: React.FC = () => {
               </div>
               <button
                 type="button"
-                onClick={() => setIsAddProductOpen(false)}
+                onClick={() => {
+                  setIsAddProductOpen(false);
+                  setProductPhotoPreview('');
+                  setNewProdImage('');
+                  setShowManualUrlInput(false);
+                }}
                 className={`w-7 h-7 rounded-full ${
                   theme === 'light' ? 'bg-slate-100 border-slate-200 text-slate-500 hover:text-slate-800' : 'bg-neutral-900 border-neutral-800 text-neutral-400 hover:text-white'
                 } border flex items-center justify-center`}
@@ -2641,17 +2893,100 @@ export const ProfileScreen: React.FC = () => {
               />
             </div>
 
+            {/* Product Photo Selection (Native Gallery / Camera Picker) */}
             <div>
-              <label className="block text-[11px] font-bold mb-1 text-neutral-400">Photo URL (Optional)</label>
+              <label className="block text-[11px] font-bold mb-1 text-neutral-400">Product Photo</label>
               <input
-                type="url"
-                value={newProdImage}
-                onChange={(e) => setNewProdImage(e.target.value)}
-                placeholder="https://... (defaults to studio product image)"
-                className={`w-full p-2.5 rounded-xl text-xs outline-none border ${
-                  theme === 'light' ? 'bg-slate-50 border-slate-300 focus:border-amber-500' : 'bg-neutral-900 border-neutral-800 focus:border-amber-400 text-white'
-                }`}
+                type="file"
+                accept="image/*"
+                ref={productPhotoInputRef}
+                onChange={handleProductPhotoSelect}
+                className="hidden"
               />
+
+              {productPhotoPreview || newProdImage ? (
+                <div className={`relative rounded-2xl p-2.5 border flex items-center gap-3 ${
+                  theme === 'light' ? 'bg-amber-50/50 border-amber-300' : 'bg-black/40 border-amber-500/30'
+                }`}>
+                  <img
+                    src={productPhotoPreview || newProdImage}
+                    alt="Product Preview"
+                    className="w-16 h-16 rounded-xl object-cover border border-amber-500/40 shrink-0 shadow-sm"
+                  />
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-1.5 mb-1 flex-wrap">
+                      <span className="text-[10px] font-bold text-emerald-500 bg-emerald-950/40 px-2 py-0.5 rounded-full border border-emerald-500/30 flex items-center gap-1">
+                        <CheckCircle2 className="w-3 h-3 text-emerald-500" /> Photo Selected
+                      </span>
+                      {isUploadingProductPhoto && (
+                        <span className="text-[10px] text-amber-500 animate-pulse font-medium">Uploading to cloud...</span>
+                      )}
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() => productPhotoInputRef.current?.click()}
+                        className="text-[11px] font-bold text-cyan-400 hover:text-cyan-300 underline"
+                      >
+                        Change Photo
+                      </button>
+                      <span className="text-neutral-500 text-[10px]">•</span>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setProductPhotoPreview('');
+                          setNewProdImage('');
+                        }}
+                        className="text-[11px] font-bold text-rose-400 hover:text-rose-300 underline"
+                      >
+                        Remove
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              ) : (
+                <div
+                  onClick={() => productPhotoInputRef.current?.click()}
+                  className={`border-2 border-dashed rounded-2xl p-3.5 text-center cursor-pointer transition-all flex flex-col items-center justify-center gap-1.5 active:scale-[0.99] ${
+                    theme === 'light'
+                      ? 'bg-amber-50/60 border-amber-300 hover:bg-amber-100/60 text-slate-700'
+                      : 'bg-neutral-900/60 border-neutral-700 hover:border-amber-400/60 text-neutral-300'
+                  }`}
+                >
+                  <div className="w-10 h-10 rounded-full bg-amber-500/15 flex items-center justify-center text-amber-500">
+                    <Camera className="w-5 h-5" />
+                  </div>
+                  <div>
+                    <p className="text-xs font-bold text-amber-500">Choose Product Photo</p>
+                    <p className="text-[10px] text-neutral-400">Select image from gallery or camera</p>
+                  </div>
+                </div>
+              )}
+
+              <div className="mt-1 flex items-center justify-between text-[10px]">
+                <button
+                  type="button"
+                  onClick={() => setShowManualUrlInput(!showManualUrlInput)}
+                  className="text-neutral-400 hover:text-neutral-200 underline"
+                >
+                  {showManualUrlInput ? 'Hide image URL input' : 'Or enter photo URL'}
+                </button>
+              </div>
+
+              {showManualUrlInput && (
+                <input
+                  type="url"
+                  value={newProdImage}
+                  onChange={(e) => {
+                    setNewProdImage(e.target.value);
+                    setProductPhotoPreview(e.target.value);
+                  }}
+                  placeholder="https://... (direct image link)"
+                  className={`w-full p-2.5 rounded-xl text-xs outline-none border mt-1.5 ${
+                    theme === 'light' ? 'bg-slate-50 border-slate-300 focus:border-amber-500' : 'bg-neutral-900 border-neutral-800 focus:border-amber-400 text-white'
+                  }`}
+                />
+              )}
             </div>
 
             <div className={`p-2.5 rounded-xl text-[10px] leading-relaxed border ${
@@ -2660,12 +2995,14 @@ export const ProfileScreen: React.FC = () => {
               🔒 4% ValuVid escrow processing fee is deducted upon successful buyer delivery confirmation.
             </div>
 
-            <button
-              type="submit"
-              className="w-full py-3 rounded-xl bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-400 hover:to-amber-500 text-neutral-950 font-black text-xs shadow-md active:scale-95 transition-all mt-1"
-            >
-              List in ValuStore 🚀
-            </button>
+            <div className="pt-1 pb-3 sm:pb-0">
+              <button
+                type="submit"
+                className="w-full py-3.5 rounded-xl bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-400 hover:to-amber-500 text-neutral-950 font-black text-xs shadow-md active:scale-95 transition-all"
+              >
+                List in ValuStore 🚀
+              </button>
+            </div>
           </form>
         </div>
       )}

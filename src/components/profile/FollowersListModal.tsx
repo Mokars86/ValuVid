@@ -2,7 +2,7 @@ import React, { useState, useMemo } from 'react';
 import { X, Search, Check, Plus, Users, UserCheck } from 'lucide-react';
 import { Creator } from '../../types';
 import { useApp } from '../../context/AppContext';
-import { getUserAvatar } from '../../utils/userDirectory';
+import { getUserAvatar, isMockAccount } from '../../utils/userDirectory';
 import { formatCompactNumber } from '../../utils/formatNumber';
 import { fetchFollowersListFromSupabase, fetchFollowingListFromSupabase } from '../../services/supabaseClient';
 
@@ -26,6 +26,8 @@ export const FollowersListModal: React.FC<FollowersListModalProps> = ({
   const { 
     theme, 
     currentUser, 
+    followedCreators,
+    isFollowingCreator,
     toggleFollowCreator, 
     openCreatorProfile, 
     videos 
@@ -63,43 +65,48 @@ export const FollowersListModal: React.FC<FollowersListModalProps> = ({
 
   // Fetch real followers and following from Supabase
   React.useEffect(() => {
+    setActiveTab(initialTab);
+    setRemoteFollowers([]);
+    setRemoteFollowing([]);
     if (!isOpen || !user.username) return;
+    let isActive = true;
     setIsLoading(true);
     Promise.all([
       fetchFollowersListFromSupabase(user.username),
       fetchFollowingListFromSupabase(user.username)
     ]).then(([followers, following]) => {
+      if (!isActive) return;
       setRemoteFollowers(followers);
       setRemoteFollowing(following);
     }).catch(() => {}).finally(() => {
-      setIsLoading(false);
+      if (isActive) setIsLoading(false);
     });
-  }, [isOpen, user.username]);
+    return () => {
+      isActive = false;
+    };
+  }, [isOpen, user.username, initialTab]);
 
   // Read current user's followed creators
   const myFollowedSet = useMemo(() => {
-    try {
-      const list: string[] = JSON.parse(localStorage.getItem('valuvid_followed_creators') || '[]');
-      return new Set(list.map((u) => u.toLowerCase().trim().replace(/^@/, '')));
-    } catch {
-      return new Set<string>();
-    }
-  }, [currentUser]);
+    return new Set(followedCreators.map((u) => u.toLowerCase().trim().replace(/^@/, '')));
+  }, [followedCreators]);
 
   // Compute following list from real followed users and remote data
   const followingList: Creator[] = useMemo(() => {
     if (remoteFollowing.length > 0) {
-      return remoteFollowing.map(u => ({
-        ...u,
-        isFollowing: myFollowedSet.has(u.username.toLowerCase()) || isViewingSelf,
-      }));
+      return remoteFollowing
+        .filter((u) => !isMockAccount(u.username) && (u.name || '').trim().toLowerCase() !== 'valuvid creator')
+        .map(u => ({
+          ...u,
+          isFollowing: myFollowedSet.has(u.username.toLowerCase()) || isViewingSelf,
+        }));
     }
 
     const list: Creator[] = [];
     const seen = new Set<string>();
 
     myFollowedSet.forEach((username) => {
-      if (username && !seen.has(username) && username !== (currentUser?.username || '').toLowerCase()) {
+      if (username && !isMockAccount(username) && !seen.has(username) && username !== (currentUser?.username || '').toLowerCase()) {
         seen.add(username);
         const matched = videos.find(
           (v) => (v.creator?.username || '').toLowerCase().replace(/^@/, '') === username
@@ -123,12 +130,14 @@ export const FollowersListModal: React.FC<FollowersListModalProps> = ({
     return list;
   }, [myFollowedSet, videos, currentUser, remoteFollowing, isViewingSelf]);
 
-  // Compute followers list (people who follow target user)
+  // Compute followers list (people who follow target user, strictly real users)
   const followersList: Creator[] = useMemo(() => {
-    return remoteFollowers.map(u => ({
-      ...u,
-      isFollowing: myFollowedSet.has(u.username.toLowerCase()),
-    }));
+    return remoteFollowers
+      .filter((u) => !isMockAccount(u.username) && (u.name || '').trim().toLowerCase() !== 'valuvid creator')
+      .map(u => ({
+        ...u,
+        isFollowing: myFollowedSet.has(u.username.toLowerCase()),
+      }));
   }, [remoteFollowers, myFollowedSet]);
 
   const currentList = activeTab === 'following' ? followingList : followersList;
@@ -255,7 +264,7 @@ export const FollowersListModal: React.FC<FollowersListModalProps> = ({
                       src={getUserAvatar(creator.avatar, creator.name || creator.username)}
                       alt={creator.name}
                       onError={(e) => {
-                        (e.currentTarget as HTMLImageElement).src = '/default-avatar.svg';
+                        (e.currentTarget as HTMLImageElement).src = '/default-avatar.jpg';
                       }}
                       className="w-10 h-10 rounded-full object-cover border border-amber-500/30 group-hover:scale-105 transition-transform shrink-0"
                     />

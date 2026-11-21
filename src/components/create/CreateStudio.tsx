@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { 
   Camera, 
   FlipHorizontal, 
@@ -38,12 +38,16 @@ import {
   RotateCcw,
   FolderOpen,
   Cloud,
-  CloudUpload
+  CloudUpload,
+  Film,
+  Clock,
+  Music2
 } from 'lucide-react';
 import { useApp } from '../../context/AppContext';
 import { sounds } from '../../utils/soundEffects';
 import { uploadMediaToSupabase, STORAGE_BUCKET_NAME } from '../../services/supabaseClient';
 import { saveMediaBlob } from '../../utils/mediaStorage';
+import { detectAiInMediaFile, AIDetectionResult } from '../../utils/aiMediaDetector';
 
 export const CreateStudio: React.FC = () => {
   const { 
@@ -54,7 +58,11 @@ export const CreateStudio: React.FC = () => {
     setShowProModal, 
     setShareToast,
     addFundsToWallet,
-    products
+    products,
+    authUser,
+    isLoggedIn,
+    setAuthModalOpen,
+    setAuthMode
   } = useApp();
 
   const [selectedProductId, setSelectedProductId] = useState<string>('');
@@ -81,6 +89,7 @@ export const CreateStudio: React.FC = () => {
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const cameraRecordInputRef = useRef<HTMLInputElement | null>(null);
   const coverInputRef = useRef<HTMLInputElement | null>(null);
+  const previewVideoRef = useRef<HTMLVideoElement | null>(null);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const recordedChunksRef = useRef<Blob[]>([]);
   const pendingSubstandardFileRef = useRef<File | null>(null);
@@ -89,10 +98,26 @@ export const CreateStudio: React.FC = () => {
   const [uploadedMediaType, setUploadedMediaType] = useState<'video'>('video');
   const [uploadedFileName, setUploadedFileName] = useState<string | null>(null);
   const [isCloudUploading, setIsCloudUploading] = useState(false);
+  const [uploadProgress, setUploadProgress] = useState(0);
+  const [uploadComplete, setUploadComplete] = useState(false);
+  const [showUploadProgressModal, setShowUploadProgressModal] = useState(false);
+  const uploadIntervalRef = useRef<any>(null);
   const [supabaseUploadStatus, setSupabaseUploadStatus] = useState<string | null>(null);
   const [autoCoverUrl, setAutoCoverUrl] = useState<string | null>(null);
   const [customCoverUrl, setCustomCoverUrl] = useState<string | null>(null);
   const [isExtractingCover, setIsExtractingCover] = useState(false);
+  const [videoDurationSec, setVideoDurationSec] = useState<number>(15);
+  const [selectedCoverTimeSec, setSelectedCoverTimeSec] = useState<number>(0.5);
+  const [filmstripFrames, setFilmstripFrames] = useState<string[]>([]);
+  const [isGeneratingFilmstrip, setIsGeneratingFilmstrip] = useState<boolean>(false);
+  const [selectedStudioSound, setSelectedStudioSound] = useState<{ title: string; artist: string } | null>(() => {
+    try {
+      const raw = localStorage.getItem('valuvid_selected_studio_audio');
+      return raw ? JSON.parse(raw) : null;
+    } catch {
+      return null;
+    }
+  });
 
   // 720p Minimum Quality Standards
   const [videoResolution, setVideoResolution] = useState<{ width: number; height: number; qualityLabel: string } | null>(null);
@@ -115,6 +140,13 @@ export const CreateStudio: React.FC = () => {
   ]);
 
   const isLiveEligible = (currentUser.followers >= 10000) || isProMember;
+
+  // Cleanup upload interval on unmount
+  useEffect(() => {
+    return () => {
+      if (uploadIntervalRef.current) clearInterval(uploadIntervalRef.current);
+    };
+  }, []);
 
   // Live broadcast simulator timers
   useEffect(() => {
@@ -203,6 +235,7 @@ export const CreateStudio: React.FC = () => {
   const [aiFaceDeepfake, setAiFaceDeepfake] = useState(false);
   const [aiTextToVideo, setAiTextToVideo] = useState(false);
   const [aiAssistedEditing, setAiAssistedEditing] = useState(true);
+  const [detectedAiScan, setDetectedAiScan] = useState<AIDetectionResult | null>(null);
 
   // Advanced Creator Features: ValuSplit & Community Goal
   const [enableValuSplit, setEnableValuSplit] = useState(false);
@@ -362,15 +395,221 @@ export const CreateStudio: React.FC = () => {
     }
   };
 
+  // Helper to extract a representative frame from the actively rendering preview video
+  const captureFromPreviewVideo = useCallback((): string | null => {
+    try {
+      const v = previewVideoRef.current;
+      if (v && v.videoWidth > 0 && v.videoHeight > 0) {
+        const canvas = document.createElement('canvas');
+        const maxW = 480;
+        const maxH = 854;
+        let targetW = v.videoWidth;
+        let targetH = v.videoHeight;
+        const ratio = Math.min(maxW / targetW, maxH / targetH);
+        targetW = Math.round(targetW * ratio);
+        targetH = Math.round(targetH * ratio);
+        canvas.width = targetW;
+        canvas.height = targetH;
+        const ctx = canvas.getContext('2d');
+        if (ctx) {
+          ctx.drawImage(v, 0, 0, targetW, targetH);
+          const dataUrl = canvas.toDataURL('image/jpeg', 0.8);
+          if (dataUrl && dataUrl.length > 200) {
+            setAutoCoverUrl((prev) => prev || dataUrl);
+            return dataUrl;
+          }
+        }
+      }
+    } catch (e) {
+      console.warn('[CreateStudio] Error capturing from preview video:', e);
+    }
+    return null;
+  }, []);
+
+  const formatTimeSec = (sec: number): string => {
+    if (isNaN(sec) || sec < 0) return '0:00.0';
+    const m = Math.floor(sec / 60);
+    const s = (sec % 60).toFixed(1);
+    return `${m}:${parseFloat(s) < 10 ? '0' : ''}${s}`;
+  };
+
+  // Generate an 8-frame visual filmstrip timeline across the video duration
+  const generateFilmstripFrames = useCallback(async (source: string | File | Blob, durationFallback = 15) => {
+    if (!source) return;
+    setIsGeneratingFilmstrip(true);
+    try {
+      const video = document.createElement('video');
+      video.crossOrigin = 'anonymous';
+      video.muted = true;
+      video.playsInline = true;
+      video.preload = 'auto';
+
+      video.style.position = 'fixed';
+      video.style.top = '-9999px';
+      video.style.left = '-9999px';
+      video.style.width = '120px';
+      video.style.height = '160px';
+      video.style.opacity = '0';
+      video.style.pointerEvents = 'none';
+      if (typeof document !== 'undefined' && document.body) {
+        document.body.appendChild(video);
+      }
+
+      const blobUrl = typeof source === 'string' ? source : URL.createObjectURL(source);
+      video.src = blobUrl;
+
+      await new Promise<void>((resolve) => {
+        let isDone = false;
+        const onLoaded = () => {
+          if (isDone) return;
+          isDone = true;
+          video.removeEventListener('loadedmetadata', onLoaded);
+          resolve();
+        };
+        video.addEventListener('loadedmetadata', onLoaded);
+        setTimeout(() => {
+          if (!isDone) {
+            isDone = true;
+            video.removeEventListener('loadedmetadata', onLoaded);
+            resolve();
+          }
+        }, 1500);
+      });
+
+      const effectiveDuration = (video.duration && isFinite(video.duration) && video.duration > 0)
+        ? video.duration
+        : durationFallback;
+
+      setVideoDurationSec(effectiveDuration);
+
+      const frameCount = 8;
+      const step = effectiveDuration / Math.max(1, frameCount);
+      const timestamps = Array.from({ length: frameCount }, (_, i) =>
+        Math.min(effectiveDuration - 0.05, Math.max(0.05, i * step + 0.1))
+      );
+
+      const extracted: string[] = [];
+      const canvas = document.createElement('canvas');
+      canvas.width = 120;
+      canvas.height = 160;
+      const ctx = canvas.getContext('2d');
+
+      for (const time of timestamps) {
+        await new Promise<void>((res) => {
+          let done = false;
+          const onSeek = () => {
+            if (done) return;
+            done = true;
+            video.removeEventListener('seeked', onSeek);
+            try {
+              if (ctx && video.videoWidth > 0) {
+                ctx.drawImage(video, 0, 0, 120, 160);
+                const dataUrl = canvas.toDataURL('image/jpeg', 0.6);
+                extracted.push(dataUrl);
+              }
+            } catch {}
+            res();
+          };
+          video.addEventListener('seeked', onSeek);
+          video.currentTime = time;
+          setTimeout(() => {
+            if (!done) {
+              done = true;
+              video.removeEventListener('seeked', onSeek);
+              res();
+            }
+          }, 350);
+        });
+      }
+
+      if (video.parentNode) {
+        video.parentNode.removeChild(video);
+      }
+      if (typeof source !== 'string' && blobUrl) {
+        try {
+          URL.revokeObjectURL(blobUrl);
+        } catch {}
+      }
+
+      if (extracted.length > 0) {
+        setFilmstripFrames(extracted);
+      }
+    } catch (err) {
+      console.warn('[CreateStudio] Error generating filmstrip frames:', err);
+    } finally {
+      setIsGeneratingFilmstrip(false);
+    }
+  }, []);
+
+  const handleSeekCoverTime = useCallback((time: number) => {
+    setSelectedCoverTimeSec(time);
+    if (customCoverUrl) {
+      setCustomCoverUrl(null);
+    }
+    const v = previewVideoRef.current;
+    if (v) {
+      v.currentTime = time;
+      v.pause();
+      try {
+        const canvas = document.createElement('canvas');
+        const maxW = 480;
+        const maxH = 854;
+        let targetW = v.videoWidth || 360;
+        let targetH = v.videoHeight || 640;
+        const ratio = Math.min(maxW / targetW, maxH / targetH);
+        targetW = Math.round(targetW * ratio);
+        targetH = Math.round(targetH * ratio);
+        canvas.width = targetW;
+        canvas.height = targetH;
+        const ctx = canvas.getContext('2d');
+        if (ctx) {
+          ctx.drawImage(v, 0, 0, targetW, targetH);
+          const dataUrl = canvas.toDataURL('image/jpeg', 0.8);
+          if (dataUrl && dataUrl.length > 100) {
+            setAutoCoverUrl(dataUrl);
+          }
+        }
+      } catch (err) {
+        console.warn('Error capturing scrubbed frame:', err);
+      }
+    }
+  }, [customCoverUrl]);
+
+  const handleSeekCoverComplete = useCallback((time: number) => {
+    setSelectedCoverTimeSec(time);
+    const v = previewVideoRef.current;
+    if (v) {
+      v.currentTime = time;
+      v.pause();
+      setTimeout(() => {
+        captureFromPreviewVideo();
+      }, 100);
+    }
+  }, [captureFromPreviewVideo]);
+
   // Helper to extract a representative frame from a video file as default cover/thumbnail
-  const extractThumbnailFromVideo = (videoSource: string | File): Promise<string> => {
+  const extractThumbnailFromVideo = (videoSource: string | File | Blob): Promise<string> => {
     return new Promise((resolve) => {
       try {
         const video = document.createElement('video');
         video.crossOrigin = 'anonymous';
         video.muted = true;
         video.playsInline = true;
-        video.autoplay = true;
+        video.setAttribute('playsinline', '');
+        video.setAttribute('webkit-playsinline', '');
+        video.preload = 'auto';
+
+        // Mount offscreen in DOM so Android WebView compositor actively decodes frames
+        video.style.position = 'fixed';
+        video.style.top = '-9999px';
+        video.style.left = '-9999px';
+        video.style.width = '160px';
+        video.style.height = '284px';
+        video.style.opacity = '0';
+        video.style.pointerEvents = 'none';
+        if (typeof document !== 'undefined' && document.body) {
+          document.body.appendChild(video);
+        }
 
         let blobUrl = '';
         if (typeof videoSource === 'string') {
@@ -381,6 +620,24 @@ export const CreateStudio: React.FC = () => {
         }
 
         let isResolved = false;
+
+        const cleanup = () => {
+          video.removeEventListener('loadedmetadata', onLoadedMetadata);
+          video.removeEventListener('loadeddata', onLoadedData);
+          video.removeEventListener('seeked', onSeeked);
+          video.removeEventListener('canplay', onSeeked);
+          video.removeEventListener('timeupdate', onSeeked);
+          video.removeEventListener('error', onError);
+          video.pause();
+          if (video.parentNode) {
+            video.parentNode.removeChild(video);
+          }
+          if (blobUrl) {
+            try {
+              URL.revokeObjectURL(blobUrl);
+            } catch {}
+          }
+        };
 
         const captureFrame = () => {
           if (isResolved) return true;
@@ -403,39 +660,45 @@ export const CreateStudio: React.FC = () => {
               if (ctx) {
                 ctx.drawImage(video, 0, 0, targetW, targetH);
                 const dataUrl = canvas.toDataURL('image/jpeg', 0.8);
-                isResolved = true;
-                cleanup();
-                resolve(dataUrl);
-                return true;
+                if (dataUrl && dataUrl.length > 100) {
+                  isResolved = true;
+                  cleanup();
+                  resolve(dataUrl);
+                  return true;
+                }
               }
             }
           } catch (e) {
-            console.warn('Canvas extract frame error:', e);
+            console.warn('[CreateStudio] Canvas extract frame error:', e);
           }
           return false;
         };
 
         const onSeeked = () => {
           if (!captureFrame()) {
-            // Retry frame capture after brief render tick
             setTimeout(captureFrame, 150);
           }
         };
 
-        const onLoadedData = () => {
+        const onLoadedMetadata = () => {
           try {
-            // Seek to 0.5s or 25% of video to capture a crisp non-black frame
-            video.currentTime = Math.min(0.5, video.duration ? video.duration / 4 : 0.1);
+            const dur = (video.duration && isFinite(video.duration) && video.duration > 0) ? video.duration : 0;
+            const seekTarget = dur > 0 ? Math.min(1.0, Math.max(0.1, dur * 0.25)) : 0.1;
+            video.currentTime = seekTarget;
           } catch {
             captureFrame();
           }
         };
 
-        const cleanup = () => {
-          video.removeEventListener('loadeddata', onLoadedData);
-          video.removeEventListener('seeked', onSeeked);
-          video.removeEventListener('canplay', onSeeked);
-          video.removeEventListener('error', onError);
+        const onLoadedData = () => {
+          if (!captureFrame()) {
+            try {
+              const dur = (video.duration && isFinite(video.duration) && video.duration > 0) ? video.duration : 0;
+              video.currentTime = dur > 0 ? Math.min(1.0, Math.max(0.1, dur * 0.25)) : 0.1;
+            } catch {
+              captureFrame();
+            }
+          }
         };
 
         const onError = () => {
@@ -446,10 +709,29 @@ export const CreateStudio: React.FC = () => {
           }
         };
 
+        video.addEventListener('loadedmetadata', onLoadedMetadata);
         video.addEventListener('loadeddata', onLoadedData);
         video.addEventListener('seeked', onSeeked);
         video.addEventListener('canplay', onSeeked);
+        video.addEventListener('timeupdate', onSeeked);
         video.addEventListener('error', onError);
+
+        // Attempt playback trigger if hardware requires rendering tick for frame decoding
+        setTimeout(() => {
+          if (!isResolved && !captureFrame()) {
+            try {
+              const playPromise = video.play();
+              if (playPromise !== undefined) {
+                playPromise.then(() => {
+                  setTimeout(() => {
+                    captureFrame();
+                    video.pause();
+                  }, 120);
+                }).catch(() => {});
+              }
+            } catch {}
+          }
+        }, 500);
 
         setTimeout(() => {
           if (!captureFrame() && !isResolved) {
@@ -457,7 +739,7 @@ export const CreateStudio: React.FC = () => {
             cleanup();
             resolve('');
           }
-        }, 2500);
+        }, 2800);
 
         video.load();
       } catch (err) {
@@ -607,7 +889,24 @@ export const CreateStudio: React.FC = () => {
     setTitle(cleanName || 'ValuVid Studio Creation');
     setStep('details');
 
-    // Automatically extract thumbnail frame as default cover
+    // Automated C2PA & AI Synthetic Media Provenance Scan
+    detectAiInMediaFile(file).then((aiScan) => {
+      if (aiScan.isAiDetected) {
+        setIsAiAssistedOrGenerated(true);
+        setAiDisclosureType(aiScan.disclosureType);
+        if (aiScan.disclosureType === 'generated') {
+          setAiTextToVideo(true);
+        } else {
+          setAiAssistedEditing(true);
+        }
+        setDetectedAiScan(aiScan);
+        setShareToast(`🤖 AI Provenance detected (${aiScan.generatorName || 'C2PA'}). Auto-disclosed!`);
+      } else {
+        setDetectedAiScan(null);
+      }
+    });
+
+    // Automatically extract thumbnail frame & 8-frame filmstrip timeline for cover selection
     setIsExtractingCover(true);
     extractThumbnailFromVideo(file).then((frame) => {
       setIsExtractingCover(false);
@@ -615,21 +914,52 @@ export const CreateStudio: React.FC = () => {
         setAutoCoverUrl(frame);
       }
     });
+    generateFilmstripFrames(file, 15);
 
     // Asynchronously upload to Supabase Storage Bucket ('ValuVid App' or 'valuvid-app')
+    if (uploadIntervalRef.current) clearInterval(uploadIntervalRef.current);
     setIsCloudUploading(true);
-    setSupabaseUploadStatus('Uploading to Cloud Storage (syncing for all devices)...');
+    setUploadProgress(12);
+    setUploadComplete(false);
+    setShowUploadProgressModal(true);
+    setSupabaseUploadStatus('Uploading video to Cloud Storage...');
+
+    // Smooth counting circle progress simulation
+    let currentPct = 12;
+    uploadIntervalRef.current = setInterval(() => {
+      currentPct += Math.max(1, Math.floor((94 - currentPct) / 7));
+      if (currentPct >= 95) {
+        currentPct = 95;
+      }
+      setUploadProgress(currentPct);
+    }, 180);
+
     uploadMediaToSupabase(file, file.name).then(({ url: remoteUrl, isRemote, error }) => {
-      setIsCloudUploading(false);
-      if (isRemote) {
+      if (uploadIntervalRef.current) clearInterval(uploadIntervalRef.current);
+      setUploadProgress(100);
+      setUploadComplete(true);
+
+      if (isRemote && remoteUrl) {
         setUploadedMediaUrl(remoteUrl);
         setSupabaseUploadStatus(`Uploaded to Cloud Storage ☁️ Available on all devices!`);
       } else {
-        setSupabaseUploadStatus(error || 'Saved in local device cache (Cloud bucket missing)');
+        setSupabaseUploadStatus(error ? `Cloud upload paused (${error}) — will retry on publish` : 'Saved locally — will retry cloud upload on publish');
       }
+
+      // Show green checkmark completion briefly, then dismiss modal and enable publish button
+      setTimeout(() => {
+        setIsCloudUploading(false);
+        setShowUploadProgressModal(false);
+      }, 1200);
     }).catch(() => {
-      setIsCloudUploading(false);
-      setSupabaseUploadStatus('Saved locally in device cache');
+      if (uploadIntervalRef.current) clearInterval(uploadIntervalRef.current);
+      setUploadProgress(100);
+      setUploadComplete(true);
+      setSupabaseUploadStatus('Saved locally — will retry cloud upload on publish');
+      setTimeout(() => {
+        setIsCloudUploading(false);
+        setShowUploadProgressModal(false);
+      }, 1000);
     });
   };
 
@@ -662,8 +992,15 @@ export const CreateStudio: React.FC = () => {
   const handlePublish = async (e: React.FormEvent) => {
     e.preventDefault();
 
-    if (isCloudUploading) {
-      alert('Your video is still uploading to Supabase Cloud Storage. Please wait a moment so it is available across all your devices!');
+    if (!authUser && !isLoggedIn) {
+      setAuthMode('signup');
+      setAuthModalOpen(true);
+      setShareToast('Please sign in or register to publish videos!');
+      return;
+    }
+
+    if (isCloudUploading || (selectedFileObj && !uploadComplete && uploadProgress < 100)) {
+      alert('Your video is still uploading to ValuVid Cloud Storage. Please wait for the upload circle to reach 100% before publishing!');
       return;
     }
 
@@ -695,6 +1032,9 @@ export const CreateStudio: React.FC = () => {
 
     // Default to the video frame thumbnail by default unless user selected a custom cover
     let finalThumbnail = customCoverUrl || autoCoverUrl;
+    if (!finalThumbnail && previewVideoRef.current) {
+      finalThumbnail = captureFromPreviewVideo();
+    }
     if (!finalThumbnail && selectedFileObj) {
       setIsExtractingCover(true);
       finalThumbnail = await extractThumbnailFromVideo(selectedFileObj);
@@ -707,9 +1047,24 @@ export const CreateStudio: React.FC = () => {
       finalThumbnail = generateFallbackThumbnail(title || 'ValuVid Creation', autoCategory);
     }
 
-    publishNewVideo({
+    // If finalThumbnail is a data URL, upload as JPEG to Supabase Storage for permanent cloud availability
+    let cloudThumbnailUrl = finalThumbnail;
+    if (finalThumbnail && finalThumbnail.startsWith('data:image/')) {
+      try {
+        const res = await fetch(finalThumbnail);
+        const thumbBlob = await res.blob();
+        const uploadCoverRes = await uploadMediaToSupabase(thumbBlob, `cover_${Date.now()}.jpg`);
+        if (uploadCoverRes?.url && uploadCoverRes.url.startsWith('http')) {
+          cloudThumbnailUrl = uploadCoverRes.url;
+        }
+      } catch (err) {
+        console.warn('[CreateStudio] Error uploading thumbnail to cloud:', err);
+      }
+    }
+
+    await publishNewVideo({
       videoUrl: uploadedMediaUrl || '',
-      thumbnailUrl: finalThumbnail,
+      thumbnailUrl: cloudThumbnailUrl || finalThumbnail,
       fileBlob: selectedFileObj || undefined,
       title: title || 'ValuVid Studio Creation',
       caption: caption || 'Check out my new vertical creation on ValuVid! 🇬🇭✨',
@@ -718,8 +1073,8 @@ export const CreateStudio: React.FC = () => {
       isPayPerUnlock,
       unlockPriceGHS: isPayPerUnlock ? unlockPriceGHS : undefined,
       audioTrack: {
-        title: 'Original Sound',
-        artist: currentUser.name,
+        title: selectedStudioSound?.title || 'Original Sound',
+        artist: selectedStudioSound?.artist || currentUser.name,
       },
       musicVolume: 0,
       isAiContent: isAiAssistedOrGenerated,
@@ -811,7 +1166,7 @@ export const CreateStudio: React.FC = () => {
           </div>
 
           {/* TOP TOOLBAR */}
-          <div className="relative z-20 w-full pt-8 sm:pt-5 px-4 flex items-center justify-between">
+          <div className="relative z-20 w-full pt-[max(2.25rem,calc(env(safe-area-inset-top,0px)+0.5rem))] sm:pt-5 px-4 flex items-center justify-between">
             {isLiveBroadcasting ? (
               /* LIVE BROADCAST TOP HUD */
               <div className="w-full flex items-center justify-between gap-1">
@@ -1211,7 +1566,7 @@ export const CreateStudio: React.FC = () => {
         </>
       ) : (
         /* POST-UPLOAD SETUP SCREEN (Caption, Category & Monetization Switcher) */
-        <div className="w-full h-full bg-neutral-950 flex flex-col justify-between overflow-y-auto px-4 pt-8 sm:pt-4 pb-4 animate-fade-in">
+        <div className="w-full h-full bg-neutral-950 flex flex-col justify-between overflow-y-auto px-4 pt-[max(2.25rem,calc(env(safe-area-inset-top,0px)+0.5rem))] sm:pt-4 pb-[max(5rem,calc(env(safe-area-inset-bottom,0px)+4.5rem))] animate-fade-in">
           <div>
             <div className="flex items-center justify-between pb-3 border-b border-neutral-900 mb-4">
               <button
@@ -1225,26 +1580,79 @@ export const CreateStudio: React.FC = () => {
               <div className="w-8" />
             </div>
 
+            {/* Pre-Selected Sound Chip from Discover */}
+            {selectedStudioSound && (
+              <div className="mb-3 px-3 py-1.5 rounded-xl bg-purple-500/15 border border-purple-500/30 flex items-center justify-between text-xs">
+                <div className="flex items-center gap-1.5 min-w-0">
+                  <Music2 className="w-3.5 h-3.5 text-purple-400 shrink-0" />
+                  <span className="text-purple-300 font-bold truncate">
+                    Attached Sound: {selectedStudioSound.title}
+                  </span>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setSelectedStudioSound(null);
+                    try {
+                      localStorage.removeItem('valuvid_selected_studio_audio');
+                    } catch {}
+                  }}
+                  className="text-purple-400 hover:text-white ml-2 text-xs font-bold"
+                  title="Remove sound"
+                >
+                  ✕
+                </button>
+              </div>
+            )}
+
             {/* Real Media preview thumbnail card + title */}
             <div className="flex gap-3 mb-4">
               <div className="w-20 h-28 rounded-xl bg-neutral-900 border border-neutral-800 overflow-hidden relative shrink-0">
                 {uploadedMediaUrl ? (
                   <video
+                    ref={previewVideoRef}
                     src={uploadedMediaUrl}
                     className="w-full h-full object-cover"
                     muted
                     autoPlay
                     loop
                     playsInline
+                    onLoadedMetadata={(e) => {
+                      const dur = (e.currentTarget.duration && isFinite(e.currentTarget.duration) && e.currentTarget.duration > 0)
+                        ? e.currentTarget.duration
+                        : 15;
+                      setVideoDurationSec(dur);
+                    }}
+                    onLoadedData={() => captureFromPreviewVideo()}
+                    onTimeUpdate={() => {
+                      if (!autoCoverUrl) captureFromPreviewVideo();
+                    }}
                   />
-                ) : (
+                ) : autoCoverUrl ? (
                   <img
-                    src="https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=300&auto=format&fit=crop&q=80"
-                    alt="Thumbnail"
+                    src={autoCoverUrl}
+                    alt="Video Thumbnail"
                     className="w-full h-full object-cover"
                   />
+                ) : (
+                  <div className="w-full h-full bg-neutral-900 flex flex-col items-center justify-center p-2 text-center">
+                    <VideoIcon className="w-6 h-6 text-amber-400 animate-pulse mb-1" />
+                    <span className="text-[9px] text-neutral-400">Loading Video...</span>
+                  </div>
                 )}
-                <span className="absolute bottom-1 right-1 text-[8px] bg-black/80 px-1 rounded text-cyan-300 font-mono font-bold uppercase">
+                {/* Mini Counting Circle overlay on thumbnail */}
+                {isCloudUploading && (
+                  <div className="absolute inset-0 bg-black/60 backdrop-blur-[2px] flex flex-col items-center justify-center p-1 z-10">
+                    <div className="relative w-8 h-8 flex items-center justify-center">
+                      <svg className="w-full h-full -rotate-90 transform" viewBox="0 0 36 36">
+                        <circle cx="18" cy="18" r="14" stroke="currentColor" strokeWidth="3" className="text-neutral-700" fill="transparent" />
+                        <circle cx="18" cy="18" r="14" stroke="#f59e0b" strokeWidth="3" strokeDasharray={88} strokeDashoffset={88 - (88 * Math.min(uploadProgress, 100)) / 100} strokeLinecap="round" fill="transparent" />
+                      </svg>
+                      <span className="absolute text-[8px] font-mono font-bold text-white">{Math.round(uploadProgress)}%</span>
+                    </div>
+                  </div>
+                )}
+                <span className="absolute bottom-1 right-1 text-[8px] bg-black/80 px-1 rounded text-cyan-300 font-mono font-bold uppercase z-10">
                   VIDEO
                 </span>
               </div>
@@ -1370,75 +1778,142 @@ export const CreateStudio: React.FC = () => {
               </div>
             </div>
 
-            {/* VIDEO COVER / THUMBNAIL SELECTOR */}
-            <div className="mb-4 bg-neutral-900/90 border border-neutral-800 rounded-2xl p-3 flex flex-col gap-2.5">
+            {/* VIDEO COVER / TIMELINE FILMSTRIP SCRUBBER */}
+            <div className="mb-4 bg-neutral-900/90 border border-neutral-800 rounded-2xl p-3 flex flex-col gap-3">
               <div className="flex items-center justify-between">
                 <div className="flex items-center gap-1.5 text-xs font-bold text-white">
-                  <ImageIcon className="w-4 h-4 text-amber-400" />
-                  <span>Video Cover / Thumbnail</span>
+                  <Film className="w-4 h-4 text-amber-400" />
+                  <span>Choose Cover Frame</span>
                 </div>
                 {customCoverUrl ? (
                   <span className="text-[9px] font-bold text-cyan-300 bg-cyan-950/80 border border-cyan-500/40 px-2 py-0.5 rounded-full">
-                    Custom Cover
-                  </span>
-                ) : autoCoverUrl ? (
-                  <span className="text-[9px] font-bold text-emerald-400 bg-emerald-950/80 border border-emerald-500/40 px-2 py-0.5 rounded-full">
-                    Auto-Frame Selected
+                    Custom Image
                   </span>
                 ) : (
-                  <span className="text-[9px] text-neutral-400">Default Cover</span>
+                  <span className="text-[9px] font-bold text-amber-300 bg-amber-950/80 border border-amber-500/40 px-2 py-0.5 rounded-full flex items-center gap-1">
+                    <Clock className="w-2.5 h-2.5 text-amber-400" />
+                    <span>{formatTimeSec(selectedCoverTimeSec)}s Frame</span>
+                  </span>
                 )}
               </div>
 
-              <div className="flex items-center gap-3">
-                {/* Active Cover Preview */}
-                <div className="w-16 h-20 rounded-xl bg-black border border-neutral-700 overflow-hidden relative shrink-0">
+              {/* TIMELINE FILMSTRIP SCRUBBER */}
+              <div className="flex flex-col gap-1.5">
+                <div className="flex items-center justify-between text-[10px] text-neutral-400 px-0.5 font-medium">
+                  <span className="flex items-center gap-1 text-neutral-300">
+                    <Sparkles className="w-3 h-3 text-amber-400" />
+                    <span>Slide along timeline to pick cover frame</span>
+                  </span>
+                  <span className="font-mono text-amber-300 font-bold bg-black/60 px-1.5 py-0.5 rounded border border-neutral-800 text-[9px]">
+                    {formatTimeSec(selectedCoverTimeSec)}s / {formatTimeSec(videoDurationSec)}s
+                  </span>
+                </div>
+
+                {/* Filmstrip Strip + Draggable Frame Indicator */}
+                <div className="relative h-16 w-full rounded-xl overflow-hidden bg-neutral-950 border border-neutral-800 flex select-none touch-none shadow-inner">
+                  {/* Filmstrip thumbnails */}
+                  {filmstripFrames.length > 0 ? (
+                    filmstripFrames.map((frame, idx) => (
+                      <div key={idx} className="flex-1 h-full overflow-hidden border-r border-black/40 last:border-r-0">
+                        <img src={frame} alt={`Frame ${idx}`} className="w-full h-full object-cover pointer-events-none" />
+                      </div>
+                    ))
+                  ) : (
+                    /* Loading shimmer placeholder */
+                    Array.from({ length: 8 }).map((_, idx) => (
+                      <div key={idx} className="flex-1 h-full bg-neutral-900 border-r border-neutral-800 last:border-r-0 flex items-center justify-center animate-pulse">
+                        <Film className="w-3 h-3 text-neutral-700" />
+                      </div>
+                    ))
+                  )}
+
+                  {/* Scrubber Position Box (Active Frame Indicator) */}
+                  <div
+                    className="absolute top-0 bottom-0 pointer-events-none border-2 border-amber-400 bg-amber-400/20 backdrop-blur-[1px] rounded-lg shadow-[0_0_12px_rgba(245,158,11,0.7)] z-10 transition-all duration-75 flex items-center justify-center"
+                    style={{
+                      width: '32px',
+                      left: `calc(${Math.min(94, Math.max(0, (selectedCoverTimeSec / Math.max(0.1, videoDurationSec)) * 100))}% - 16px)`,
+                    }}
+                  >
+                    <div className="w-1 h-4 bg-amber-400 rounded-full" />
+                  </div>
+
+                  {/* Native Touch & Mouse Range Slider */}
+                  <input
+                    type="range"
+                    min="0"
+                    max={Math.max(1, videoDurationSec)}
+                    step="0.05"
+                    value={selectedCoverTimeSec}
+                    onChange={(e) => handleSeekCoverTime(parseFloat(e.target.value))}
+                    onMouseUp={(e) => handleSeekCoverComplete(parseFloat((e.target as HTMLInputElement).value))}
+                    onTouchEnd={(e) => handleSeekCoverComplete(parseFloat((e.target as HTMLInputElement).value))}
+                    className="absolute inset-0 w-full h-full opacity-0 cursor-ew-resize z-20"
+                    title="Slide to select cover frame"
+                  />
+                </div>
+              </div>
+
+              {/* Cover Preview & Custom Image Button */}
+              <div className="flex items-center gap-3 pt-1 border-t border-neutral-800/80">
+                <div className="w-14 h-18 rounded-xl bg-black border border-amber-500/40 overflow-hidden relative shrink-0 shadow-md">
                   {customCoverUrl || autoCoverUrl ? (
                     <img
                       src={customCoverUrl || autoCoverUrl!}
                       alt="Selected Cover"
                       className="w-full h-full object-cover"
                     />
+                  ) : uploadedMediaUrl ? (
+                    <video
+                      src={`${uploadedMediaUrl}#t=0.1`}
+                      className="w-full h-full object-cover pointer-events-none"
+                      muted
+                      playsInline
+                      preload="metadata"
+                    />
                   ) : (
-                    <div className="w-full h-full flex flex-col items-center justify-center bg-neutral-800 text-[9px] text-neutral-400 p-1 text-center">
-                      {isExtractingCover ? (
-                        <Sparkles className="w-4 h-4 text-amber-400 animate-spin" />
-                      ) : (
-                        <span>No Cover</span>
-                      )}
+                    <div className="w-full h-full flex items-center justify-center bg-neutral-800">
+                      <Film className="w-4 h-4 text-neutral-500" />
                     </div>
                   )}
+                  <span className="absolute bottom-0.5 inset-x-0 text-center text-[7.5px] font-black uppercase tracking-wider text-amber-300 bg-black/85 py-0.5">
+                    COVER
+                  </span>
                 </div>
 
-                <div className="flex-1 flex flex-col gap-1.5 text-left">
-                  <p className="text-[11px] text-neutral-300">
+                <div className="flex-1 flex flex-col gap-1 text-left">
+                  <span className="text-[11px] font-bold text-white">
+                    {customCoverUrl ? 'Custom Image Cover' : `Frame at ${formatTimeSec(selectedCoverTimeSec)}s`}
+                  </span>
+                  <p className="text-[10px] text-neutral-400">
                     {customCoverUrl
-                      ? 'Custom thumbnail will be shown on the feed and discover grids.'
-                      : autoCoverUrl
-                      ? 'Extracted thumbnail from video frame. You can also pick a custom cover.'
-                      : 'Video frame auto-selects as cover if no custom image is chosen.'}
+                      ? 'Custom thumbnail uploaded. Tap reset to switch back to video timeline.'
+                      : 'This exact frame will be the cover shown across Feed, Profile, and Discover.'}
                   </p>
-                  
-                  <div className="flex items-center gap-2">
+
+                  <div className="flex items-center gap-2 mt-0.5">
                     <button
                       type="button"
                       onClick={() => coverInputRef.current?.click()}
-                      className="px-2.5 py-1.5 rounded-lg bg-white hover:bg-neutral-100 text-black font-bold text-[11px] transition-colors flex items-center gap-1 shadow-md active:scale-95"
+                      className="px-2.5 py-1 rounded-lg bg-neutral-800 hover:bg-neutral-700 text-neutral-200 font-bold text-[10px] transition-colors flex items-center gap-1 active:scale-95 border border-neutral-700"
                     >
-                      <Upload className="w-3 h-3 text-black" />
-                      <span>{customCoverUrl ? 'Change Cover' : 'Upload Cover'}</span>
+                      <Upload className="w-2.5 h-2.5 text-amber-400" />
+                      <span>{customCoverUrl ? 'Change Image' : 'Upload Image'}</span>
                     </button>
 
-                    {customCoverUrl && autoCoverUrl && (
+                    {customCoverUrl && (
                       <button
                         type="button"
                         onClick={() => {
                           setCustomCoverUrl(null);
                           sounds.playLikePop();
+                          if (previewVideoRef.current) {
+                            handleSeekCoverTime(selectedCoverTimeSec);
+                          }
                         }}
-                        className="px-2 py-1.5 rounded-lg bg-neutral-800 hover:bg-neutral-700 text-neutral-300 text-[10px] font-medium transition-colors"
+                        className="px-2.5 py-1 rounded-lg bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 text-[10px] font-bold transition-colors border border-amber-500/40"
                       >
-                        Reset to Video Frame
+                        Use Timeline Frame
                       </button>
                     )}
                   </div>
@@ -1586,13 +2061,36 @@ export const CreateStudio: React.FC = () => {
                     <input
                       type="checkbox"
                       checked={isAiAssistedOrGenerated}
-                      onChange={(e) => setIsAiAssistedOrGenerated(e.target.checked)}
+                      disabled={detectedAiScan?.isAiDetected}
+                      onChange={(e) => {
+                        if (detectedAiScan?.isAiDetected) return;
+                        setIsAiAssistedOrGenerated(e.target.checked);
+                      }}
                       className="sr-only peer"
                     />
                     <div className="w-9 h-5 bg-neutral-800 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-amber-500"></div>
                   </label>
                 </div>
               </div>
+
+              {detectedAiScan?.isAiDetected && (
+                <div className="p-3 rounded-2xl bg-purple-950/60 border border-purple-500/50 backdrop-blur-md flex items-start gap-2.5 shadow-lg">
+                  <div className="w-7 h-7 rounded-full bg-purple-500/20 border border-purple-400/40 flex items-center justify-center shrink-0 mt-0.5">
+                    <Sparkles className="w-4 h-4 text-purple-300 animate-pulse" />
+                  </div>
+                  <div className="flex-1 text-left">
+                    <div className="flex items-center gap-1.5 flex-wrap">
+                      <span className="text-xs font-bold text-purple-200">Auto-Detected by C2PA Provenance</span>
+                      <span className="text-[9px] font-extrabold uppercase px-1.5 py-0.5 rounded-full bg-purple-500/20 text-purple-300 border border-purple-500/30">
+                        {detectedAiScan.generatorName || 'AI Content'}
+                      </span>
+                    </div>
+                    <p className="text-[11px] text-purple-300/80 mt-0.5 leading-snug">
+                      ValuVid detected synthetic AI metadata in this file ({detectedAiScan.detectedSignatures.join(', ')}). The AI Disclosure badge has been automatically applied to maintain community transparency and fair rewards.
+                    </p>
+                  </div>
+                </div>
+              )}
 
               <p className="text-[11px] text-neutral-300">
                 Was this video significantly assisted or generated by AI tools? (Voice cloning, facial deepfake, or text-to-video synthesis)
@@ -1894,15 +2392,17 @@ export const CreateStudio: React.FC = () => {
           {/* Publish Action Button */}
           <button
             onClick={handlePublish}
-            disabled={isCloudUploading}
-            className={`w-full py-3.5 rounded-xl bg-white hover:bg-neutral-100 text-black font-black text-sm shadow-xl shadow-white/20 flex items-center justify-center gap-2 active:scale-95 transition-all ${
-              isCloudUploading ? 'opacity-70 cursor-not-allowed' : ''
+            disabled={isCloudUploading || (selectedFileObj !== null && !uploadComplete && uploadProgress < 100)}
+            className={`w-full py-3.5 rounded-xl font-black text-sm flex items-center justify-center gap-2 active:scale-95 transition-all ${
+              isCloudUploading || (selectedFileObj !== null && !uploadComplete && uploadProgress < 100)
+                ? 'bg-neutral-800 text-neutral-400 border border-neutral-700 cursor-not-allowed opacity-80'
+                : 'bg-gradient-to-r from-amber-400 via-amber-300 to-amber-500 text-black shadow-xl shadow-amber-500/25 hover:brightness-105 ring-2 ring-amber-400/40'
             }`}
           >
-            {isCloudUploading ? (
+            {isCloudUploading || (selectedFileObj !== null && !uploadComplete && uploadProgress < 100) ? (
               <>
-                <span className="w-4 h-4 border-2 border-black border-t-transparent rounded-full animate-spin" />
-                <span>Uploading to Cloud...</span>
+                <div className="w-4 h-4 border-2 border-amber-400 border-t-transparent rounded-full animate-spin" />
+                <span>Uploading Video ({Math.round(uploadProgress)}%)... Please Wait</span>
               </>
             ) : (
               <>
@@ -2206,6 +2706,118 @@ export const CreateStudio: React.FC = () => {
                   <span>Choose 720p+</span>
                 </button>
               </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* VIDEO UPLOADING COUNTING CIRCLE MODAL OVERLAY */}
+      {showUploadProgressModal && (
+        <div className="fixed inset-0 z-50 bg-black/85 backdrop-blur-md flex items-center justify-center p-4 sm:p-6 animate-fade-in select-none">
+          <div className="w-full max-w-xs sm:max-w-sm bg-[#0B0F19] border border-amber-500/30 rounded-3xl p-6 flex flex-col items-center text-center shadow-2xl relative overflow-hidden">
+            {/* Ambient background glow */}
+            <div className="absolute -top-16 -left-16 w-40 h-40 bg-amber-500/15 rounded-full blur-3xl pointer-events-none" />
+            <div className="absolute -bottom-16 -right-16 w-40 h-40 bg-cyan-500/15 rounded-full blur-3xl pointer-events-none" />
+
+            {/* Header info */}
+            <div className="flex flex-col items-center gap-1.5 mb-2 relative z-10">
+              <div className={`w-11 h-11 rounded-2xl flex items-center justify-center mb-1 transition-all ${
+                uploadComplete 
+                  ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/40 shadow-lg shadow-emerald-500/20' 
+                  : 'bg-amber-500/15 text-amber-400 border border-amber-500/30 shadow-lg shadow-amber-500/10'
+              }`}>
+                {uploadComplete ? (
+                  <CheckCircle2 className="w-6 h-6 text-emerald-400" />
+                ) : (
+                  <CloudUpload className="w-6 h-6 text-amber-400 animate-pulse" />
+                )}
+              </div>
+              <h3 className="text-base font-black text-white">
+                {uploadComplete ? 'Upload Complete! 🎉' : 'Uploading Video to ValuVid'}
+              </h3>
+              <p className="text-xs text-neutral-400 max-w-[270px] leading-relaxed">
+                {uploadComplete
+                  ? 'Your video has been safely synced to cloud storage and is ready to publish!'
+                  : 'Please wait while your video is uploaded and synced to high-definition cloud storage.'}
+              </p>
+            </div>
+
+            {/* Circular Progress Ring with Percentage Countdown/Up */}
+            <div className="relative w-36 h-36 flex items-center justify-center my-4 relative z-10">
+              <svg className="w-full h-full -rotate-90 transform" viewBox="0 0 100 100">
+                {/* Background Track */}
+                <circle
+                  cx="50"
+                  cy="50"
+                  r="40"
+                  stroke="currentColor"
+                  strokeWidth="7"
+                  className="text-neutral-800"
+                  fill="transparent"
+                />
+                {/* Dynamic Counting Progress Stroke */}
+                <circle
+                  cx="50"
+                  cy="50"
+                  r="40"
+                  stroke={uploadComplete ? '#10b981' : '#f59e0b'}
+                  strokeWidth="7"
+                  strokeDasharray={251.3}
+                  strokeDashoffset={251.3 - (251.3 * Math.min(uploadProgress, 100)) / 100}
+                  strokeLinecap="round"
+                  fill="transparent"
+                  className="transition-all duration-300 ease-out"
+                />
+              </svg>
+
+              {/* Inside the Circle */}
+              <div className="absolute inset-0 flex flex-col items-center justify-center select-none">
+                {uploadComplete ? (
+                  <div className="flex flex-col items-center animate-scale-up">
+                    <CheckCircle2 className="w-10 h-10 text-emerald-400 drop-shadow-[0_0_14px_rgba(16,185,129,0.6)]" />
+                    <span className="text-[10px] font-black uppercase tracking-wider text-emerald-400 mt-1">
+                      100% Ready
+                    </span>
+                  </div>
+                ) : (
+                  <div className="flex flex-col items-center">
+                    <span className="text-3xl font-black font-mono tracking-tight text-white drop-shadow-[0_0_10px_rgba(245,158,11,0.4)]">
+                      {Math.round(uploadProgress)}%
+                    </span>
+                    <span className="text-[9px] font-bold uppercase tracking-widest text-amber-400 animate-pulse mt-0.5">
+                      Syncing
+                    </span>
+                  </div>
+                )}
+              </div>
+            </div>
+
+            {/* Video File Specs */}
+            {selectedFileObj && (
+              <div className="px-3.5 py-1.5 rounded-full bg-neutral-900 border border-neutral-800 flex items-center gap-2 text-[11px] font-mono text-neutral-300 mb-3 relative z-10">
+                <span className="truncate max-w-[150px]">{uploadedFileName || 'video.mp4'}</span>
+                <span className="text-neutral-600">•</span>
+                <span className="text-amber-400 font-bold">{(selectedFileObj.size / (1024 * 1024)).toFixed(1)} MB</span>
+              </div>
+            )}
+
+            {/* Safe Status Notice */}
+            <div className={`w-full py-2.5 px-3 rounded-2xl text-xs font-medium border relative z-10 transition-all ${
+              uploadComplete 
+                ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-300' 
+                : 'bg-neutral-950 border-neutral-800 text-neutral-400'
+            }`}>
+              {uploadComplete ? (
+                <div className="flex items-center justify-center gap-1.5 font-bold text-emerald-400">
+                  <Check className="w-4 h-4 stroke-[3]" />
+                  <span>Publish Button Unlocked!</span>
+                </div>
+              ) : (
+                <div className="flex items-center justify-center gap-1.5">
+                  <span className="w-2 h-2 rounded-full bg-amber-400 animate-ping" />
+                  <span>Publishing is locked until upload completes</span>
+                </div>
+              )}
             </div>
           </div>
         </div>

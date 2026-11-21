@@ -10,7 +10,8 @@ import {
   Heart, 
   Sparkles, 
   Film, 
-  BadgeCheck 
+  BadgeCheck,
+  Pin 
 } from 'lucide-react';
 import { VideoItem } from '../../types';
 import { useApp } from '../../context/AppContext';
@@ -21,6 +22,7 @@ import { VideoViewersModal } from '../feed/VideoViewersModal';
 import { sounds } from '../../utils/soundEffects';
 import { getUserAvatar } from '../../utils/userDirectory';
 import { fetchUserProfileFromSupabase, getDeletedVideoIds } from '../../services/supabaseClient';
+import { PublishedVideoThumbnail } from '../common/PublishedVideoThumbnail';
 
 interface CreatorProfileModalProps {
   creator: {
@@ -46,12 +48,21 @@ export const CreatorProfileModal: React.FC<CreatorProfileModalProps> = ({
   onClose,
   onSelectVideo,
 }) => {
-  const { videos, currentUser, toggleFollowCreator, theme, setShareToast } = useApp();
+  const { videos, currentUser, isFollowingCreator, toggleFollowCreator, theme, setShareToast } = useApp();
   const [showShareModal, setShowShareModal] = useState(false);
   const [followersListOpen, setFollowersListOpen] = useState(false);
   const [followersListTab, setFollowersListTab] = useState<'followers' | 'following'>('followers');
   const [viewersModalVideo, setViewersModalVideo] = useState<VideoItem | null>(null);
-  const [liveProfile, setLiveProfile] = useState<{ followers: number; following: number; likes: number } | null>(null);
+  const [liveProfile, setLiveProfile] = useState<{
+    name?: string;
+    avatar?: string;
+    bio?: string;
+    verified?: boolean;
+    followers: number;
+    following: number;
+    likes: number;
+    pinnedVideoIds?: string[];
+  } | null>(null);
 
   // Unconditionally evaluate safe handle & memo hooks to strictly follow React Rules of Hooks
   const cleanUsername = useMemo(() => {
@@ -59,19 +70,28 @@ export const CreatorProfileModal: React.FC<CreatorProfileModalProps> = ({
     return creator.username.toLowerCase().replace(/^@/, '');
   }, [creator?.username]);
 
-  // Fetch real-time follower/following counts from Supabase when modal opens
+  // Fetch real-time profile details, follower/following counts & pinned videos from Supabase when modal opens
   React.useEffect(() => {
-    if (cleanUsername && isOpen) {
-      fetchUserProfileFromSupabase(cleanUsername).then((p) => {
-        if (p) {
-          setLiveProfile({
-            followers: p.followers,
-            following: p.following,
-            likes: p.likes,
-          });
-        }
-      }).catch(() => {});
-    }
+    setLiveProfile(null);
+    if (!cleanUsername || !isOpen) return;
+    let isActive = true;
+    fetchUserProfileFromSupabase(cleanUsername).then((p) => {
+      if (isActive && p) {
+        setLiveProfile({
+          name: p.name,
+          avatar: p.avatar,
+          bio: p.bio,
+          verified: p.verified,
+          followers: p.followers,
+          following: p.following,
+          likes: p.likes,
+          pinnedVideoIds: Array.isArray((p as any).pinnedVideoIds) ? (p as any).pinnedVideoIds.slice(0, 3) : [],
+        });
+      }
+    }).catch(() => {});
+    return () => {
+      isActive = false;
+    };
   }, [cleanUsername, isOpen]);
 
   const isMe = useMemo(() => {
@@ -81,22 +101,22 @@ export const CreatorProfileModal: React.FC<CreatorProfileModalProps> = ({
 
   const isCurrentlyFollowing = useMemo(() => {
     if (isMe || !creator) return false;
-    try {
-      const followed: string[] = JSON.parse(localStorage.getItem('valuvid_followed_creators') || '[]');
-      const hasFollowed =
-        (creator.id && followed.includes(creator.id)) ||
-        (creator.username && (followed.includes(creator.username) || followed.includes(creator.username.toLowerCase()))) ||
-        (cleanUsername && followed.includes(cleanUsername));
-      return Boolean(hasFollowed || creator.isFollowing);
-    } catch {
-      return Boolean(creator.isFollowing);
-    }
-  }, [isMe, creator, cleanUsername]);
+    return Boolean(
+      (creator.username && isFollowingCreator(creator.username)) ||
+      (creator.id && isFollowingCreator(creator.id)) ||
+      (cleanUsername && isFollowingCreator(cleanUsername)) ||
+      creator.isFollowing
+    );
+  }, [isMe, creator, cleanUsername, isFollowingCreator]);
+
+  const activePinnedIds = useMemo(() => {
+    return (liveProfile?.pinnedVideoIds || (creator as any)?.pinnedVideoIds || []).slice(0, 3);
+  }, [liveProfile?.pinnedVideoIds, creator]);
 
   const creatorVideos = useMemo(() => {
     if (!cleanUsername) return [];
     const deletedIds = getDeletedVideoIds();
-    return videos.filter((v) => {
+    const list = videos.filter((v) => {
       const u = (v.creator?.username || '').toLowerCase().replace(/^@/, '');
       return (
         u === cleanUsername &&
@@ -110,7 +130,15 @@ export const CreatorProfileModal: React.FC<CreatorProfileModalProps> = ({
         !(v.title || '').includes('[DELETED]')
       );
     });
-  }, [videos, cleanUsername]);
+    if (activePinnedIds.length === 0) return list;
+    const pinOrder = new Map<string, number>();
+    activePinnedIds.forEach((id: string, idx: number) => pinOrder.set(id, idx));
+    return [...list].sort((a, b) => {
+      const aPin = pinOrder.has(a.id) ? pinOrder.get(a.id)! : 999;
+      const bPin = pinOrder.has(b.id) ? pinOrder.get(b.id)! : 999;
+      return aPin - bPin;
+    });
+  }, [videos, cleanUsername, activePinnedIds]);
 
   const totalViews = useMemo(() => {
     return creatorVideos.reduce((acc, v) => acc + (v.stats?.views || 0), 0);
@@ -146,11 +174,20 @@ export const CreatorProfileModal: React.FC<CreatorProfileModalProps> = ({
   }
 
   const isLight = theme === 'light';
-  const displayName = creator.name || creator.username || 'ValuVid Creator';
-  const displayAvatar = getUserAvatar(creator.avatar, displayName || cleanUsername);
+  const displayName = (liveProfile?.name && liveProfile.name.toLowerCase() !== cleanUsername ? liveProfile.name : creator.name) || liveProfile?.name || creator.username || 'ValuVid Creator';
+  const rawAvatar = (liveProfile?.avatar && !liveProfile.avatar.includes('default-avatar')) ? liveProfile.avatar : creator.avatar;
+  const displayAvatar = getUserAvatar(rawAvatar, displayName || cleanUsername);
+  const displayBio = liveProfile?.bio || creator.bio || 'ValuVid Content Creator 🇬🇭✨';
+  const isVerified = Boolean(liveProfile?.verified ?? creator.verified);
 
   const handleFollowClick = () => {
     sounds.playLikePop();
+    const delta = isCurrentlyFollowing ? -1 : 1;
+    setLiveProfile((prev) =>
+      prev
+        ? { ...prev, followers: Math.max(0, prev.followers + delta) }
+        : prev
+    );
     toggleFollowCreator(creator.id || creator.username);
   };
 
@@ -172,7 +209,7 @@ export const CreatorProfileModal: React.FC<CreatorProfileModalProps> = ({
             <span className={`text-xs font-bold font-mono truncate ${isLight ? 'text-amber-800' : 'text-amber-400'}`}>
               @{creator.username}
             </span>
-            {creator.verified && (
+            {isVerified && (
               <span className="shrink-0 inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded-full text-[9px] font-black bg-amber-500/15 text-amber-500 border border-amber-500/30">
                 <BadgeCheck className="w-3 h-3 text-amber-500" />
                 VERIFIED
@@ -217,7 +254,7 @@ export const CreatorProfileModal: React.FC<CreatorProfileModalProps> = ({
                   (e.currentTarget as HTMLImageElement).src = getUserAvatar(undefined, displayName || cleanUsername);
                 }}
               />
-              {creator.verified && (
+              {isVerified && (
                 <div className="absolute bottom-1 right-1 bg-amber-500 text-neutral-950 rounded-full p-1 shadow-md">
                   <Check className="w-3.5 h-3.5 stroke-[3]" />
                 </div>
@@ -232,7 +269,7 @@ export const CreatorProfileModal: React.FC<CreatorProfileModalProps> = ({
             </p>
 
             <p className={`text-xs mt-2.5 max-w-xs leading-relaxed ${isLight ? 'text-slate-600' : 'text-neutral-300'}`}>
-              {creator.bio || 'ValuVid Content Creator 🇬🇭✨'}
+              {displayBio}
             </p>
 
             {/* Follow / Share Action Buttons */}
@@ -356,11 +393,10 @@ export const CreatorProfileModal: React.FC<CreatorProfileModalProps> = ({
                       : 'bg-neutral-900 border-neutral-800 hover:border-amber-500/60 shadow-md'
                   }`}
                 >
-                  <img
-                    src={video.thumbnailUrl || '/default-thumbnail.jpg'}
+                  <PublishedVideoThumbnail
+                    video={video}
                     alt={video.title}
                     className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
-                    loading="lazy"
                   />
 
                   {/* Gradient Overlay */}
@@ -380,7 +416,7 @@ export const CreatorProfileModal: React.FC<CreatorProfileModalProps> = ({
                         title="See who watched this video"
                       >
                         <Eye className="w-3 h-3 text-cyan-400" />
-                        {formatCompactNumber(video.stats?.views || 0)}
+                        {formatCompactNumber(Math.max(1, video.stats?.views || 1))}
                       </button>
 
                       <span className="flex items-center gap-1 font-semibold text-rose-400">
@@ -389,6 +425,14 @@ export const CreatorProfileModal: React.FC<CreatorProfileModalProps> = ({
                       </span>
                     </div>
                   </div>
+
+                  {/* Pinned Badge */}
+                  {activePinnedIds.includes(video.id) && (
+                    <div className="absolute top-2 left-2 z-10 px-2 py-0.5 rounded-full bg-amber-400 text-neutral-950 text-[9px] font-black flex items-center gap-1 shadow-md">
+                      <Pin className="w-2.5 h-2.5 fill-neutral-950" />
+                      <span>Pinned</span>
+                    </div>
+                  )}
 
                   {/* Play Hover Pill */}
                   <div className="absolute top-2 right-2 w-7 h-7 rounded-full bg-black/60 backdrop-blur-md flex items-center justify-center text-white opacity-85 group-hover:opacity-100 group-hover:scale-110 transition-all">

@@ -1,6 +1,6 @@
 import { createClient } from '@supabase/supabase-js';
 import { VideoItem, TransactionItem, BountyChallenge } from '../types';
-import { getUserAvatar } from '../utils/userDirectory';
+import { getUserAvatar, isMockAccount, isTestUserOrMockVideo } from '../utils/userDirectory';
 
 // Supabase Environment Credentials
 export const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL || 'https://xfxyyrcbgmllzxsybfbg.supabase.co';
@@ -36,66 +36,81 @@ export async function uploadMediaToSupabase(
   file: File | Blob, 
   fileName?: string
 ): Promise<{ url: string; isRemote: boolean; error?: string }> {
+  const tryUploadToBucket = async (bucket: string, path: string, contentType: string) => {
+    const { data, error } = await supabase.storage
+      .from(bucket)
+      .upload(path, file, {
+        cacheControl: '3600',
+        upsert: true,
+        contentType,
+      });
+    if (!error && data) {
+      const { data: publicUrlData } = supabase.storage.from(bucket).getPublicUrl(path);
+      return { url: publicUrlData.publicUrl, error: null as string | null };
+    }
+    return { url: '', error: error?.message || 'Upload failed' };
+  };
+
   try {
-    const ext = file.type.includes('image') ? 'jpg' : file.type.includes('mp4') ? 'mp4' : 'bin';
+    const rawMime = (file.type || '').trim();
+    const isImage = rawMime.includes('image') || /\.(jpe?g|png|webp|gif)$/i.test(fileName || '');
+    const mime = rawMime || (isImage ? 'image/jpeg' : 'video/mp4');
+    const ext = isImage ? 'jpg' : mime.includes('webm') ? 'webm' : 'mp4';
     const cleanFileName = fileName 
       ? `${Date.now()}_${fileName.replace(/[^a-zA-Z0-9._-]/g, '_')}`
       : `upload_${Date.now()}.${ext}`;
 
     const filePath = `creations/${cleanFileName}`;
+    const fallbackBucket = STORAGE_BUCKET_NAME.toLowerCase().replace(/\s+/g, '-');
+    const buckets = Array.from(new Set([STORAGE_BUCKET_NAME, fallbackBucket]));
+    const mimeCandidates = Array.from(
+      new Set([mime, isImage ? 'image/jpeg' : 'video/mp4', 'application/octet-stream'])
+    );
 
-    // 1. Try primary bucket name
-    const { data, error } = await supabase.storage
-      .from(STORAGE_BUCKET_NAME)
-      .upload(filePath, file, {
-        cacheControl: '3600',
-        upsert: true,
-      });
-
-    if (!error && data) {
-      const { data: publicUrlData } = supabase.storage
-        .from(STORAGE_BUCKET_NAME)
-        .getPublicUrl(filePath);
-      return { url: publicUrlData.publicUrl, isRemote: true };
-    }
-
-    if (error) {
-      console.warn(`[Supabase Storage] Upload to '${STORAGE_BUCKET_NAME}' failed:`, error.message);
-      
-      // 2. Try slugified bucket name fallback (e.g. 'valuvid-app')
-      const fallbackBucket = STORAGE_BUCKET_NAME.toLowerCase().replace(/\s+/g, '-');
-      const { data: fbData, error: fbError } = await supabase.storage
-        .from(fallbackBucket)
-        .upload(filePath, file, {
-          cacheControl: '3600',
-          upsert: true,
-        });
-
-      if (!fbError && fbData) {
-        const { data: pubData } = supabase.storage
-          .from(fallbackBucket)
-          .getPublicUrl(filePath);
-        return { url: pubData.publicUrl, isRemote: true };
+    let lastError = '';
+    for (const bucket of buckets) {
+      for (const candidateMime of mimeCandidates) {
+        const res = await tryUploadToBucket(bucket, filePath, candidateMime);
+        if (res.url) {
+          return { url: res.url, isRemote: true };
+        }
+        lastError = res.error || lastError;
+        // Only retry with alternate MIME if it looks like a mime/format rejection; otherwise break to next bucket
+        if (!/mime|content[-_ ]?type|format/i.test(lastError)) {
+          break;
+        }
       }
     }
 
-    // 3. Fallback: Storage bucket RLS or missing.
-    // Convert to persistent Data URL (base64) so video is cloud-synced in PostgreSQL 'videos' table
-    // and can be played by ANY user on ANY device!
-    const dataUrl = await fileToDataUrl(file);
-    return { 
-      url: dataUrl, 
-      isRemote: true, 
-      error: 'Synced via High-Speed Cloud Stream' 
+    // Retry primary bucket once after a brief backoff for transient mobile network hiccups
+    await new Promise((r) => setTimeout(r, 800));
+    const retryRes = await tryUploadToBucket(STORAGE_BUCKET_NAME, filePath, mime);
+    if (retryRes.url) {
+      return { url: retryRes.url, isRemote: true };
+    }
+
+    console.warn(`[Supabase Storage] All upload attempts failed:`, lastError || retryRes.error);
+
+    // Fallback: only small payloads (<= 800KB Data URL, e.g. cover thumbnails) can be stored in PostgreSQL
+    if (file.size <= 550000) {
+      const dataUrl = await fileToDataUrl(file);
+      if (dataUrl.length <= 800000) {
+        return {
+          url: dataUrl,
+          isRemote: true,
+          error: 'Synced via Cloud Database',
+        };
+      }
+    }
+
+    return {
+      url: '',
+      isRemote: false,
+      error: lastError || retryRes.error || 'Cloud storage upload failed',
     };
   } catch (err: any) {
     console.error('[Supabase Storage Error]:', err);
-    try {
-      const dataUrl = await fileToDataUrl(file);
-      return { url: dataUrl, isRemote: true };
-    } catch {
-      return { url: URL.createObjectURL(file), isRemote: false, error: err.message };
-    }
+    return { url: '', isRemote: false, error: err?.message || 'Cloud storage upload failed' };
   }
 }
 
@@ -109,9 +124,10 @@ export async function saveVideoToSupabase(video: VideoItem): Promise<{ success: 
       ? ''
       : video.videoUrl;
 
-    const safeThumbnailUrl = (video.thumbnailUrl && video.thumbnailUrl.startsWith('data:') && video.thumbnailUrl.length > 500000)
+    const rawThumb = video.thumbnailUrl || '';
+    const safeThumbnailUrl = (rawThumb.startsWith('data:') && rawThumb.length > 500000)
       ? ''
-      : (video.thumbnailUrl || '');
+      : (rawThumb.includes('default-avatar') ? '' : rawThumb);
 
     const { data, error } = await supabase
       .from('videos')
@@ -232,9 +248,19 @@ export async function saveLikeRecordInSupabase(
       .eq('category', 'like_record')
       .eq('creator_data->>videoId', videoId);
 
-    const finalLikes = (typeof dbLikesCount === 'number' && dbLikesCount >= 0)
-      ? dbLikesCount
-      : (fallbackLikesCount !== undefined ? Math.max(0, fallbackLikesCount) : Math.max(0, curLikes + (isLiked ? 1 : -1)));
+    let finalLikes = fallbackLikesCount !== undefined
+      ? Math.max(0, fallbackLikesCount)
+      : Math.max(0, curLikes + (isLiked ? 1 : -1));
+
+    if (typeof dbLikesCount === 'number') {
+      if (isLiked) {
+        finalLikes = Math.max(finalLikes, dbLikesCount, 1);
+      } else {
+        finalLikes = dbLikesCount > 0 ? dbLikesCount : Math.max(0, finalLikes);
+      }
+    } else if (isLiked && finalLikes === 0) {
+      finalLikes = 1;
+    }
 
     const updatedStats = {
       ...currentStats,
@@ -260,21 +286,34 @@ export async function saveLikeRecordInSupabase(
 /**
  * Fetch video IDs that a user has liked from Supabase
  */
-export async function fetchUserLikedVideoIdsFromSupabase(userIdOrUsername: string): Promise<string[]> {
+export async function fetchUserLikedVideoIdsFromSupabase(
+  userIdOrUsername: string,
+  secondaryIdentifier?: string
+): Promise<string[]> {
   try {
-    const cleanUser = (userIdOrUsername || '').trim().toLowerCase().replace(/^@/, '');
-    if (!cleanUser) return [];
+    const clean1 = (userIdOrUsername || '').trim().toLowerCase().replace(/^@/, '');
+    const clean2 = (secondaryIdentifier || '').trim().toLowerCase().replace(/^@/, '');
+    const keys = Array.from(new Set([clean1, clean2].filter(Boolean)));
+    if (keys.length === 0) return [];
+
+    const orFilters = keys
+      .flatMap((k) => [`creator_id.eq.${k}`, `creator_data->>userId.eq.${k}`])
+      .join(',');
 
     const { data, error } = await supabase
       .from('videos')
       .select('creator_data')
       .eq('category', 'like_record')
-      .eq('creator_id', cleanUser);
+      .or(orFilters);
 
     if (error || !data) return [];
-    return data
-      .map((row: any) => row.creator_data?.videoId)
-      .filter((id: any): id is string => typeof id === 'string' && Boolean(id));
+    return Array.from(
+      new Set(
+        data
+          .map((row: any) => row.creator_data?.videoId)
+          .filter((id: any): id is string => typeof id === 'string' && Boolean(id))
+      )
+    );
   } catch (err) {
     console.warn('[Supabase DB] Failed to fetch liked video IDs:', err);
     return [];
@@ -292,7 +331,7 @@ export async function saveFollowRecordInSupabase(
   try {
     const cleanFollower = (followerUsername || '').trim().toLowerCase().replace(/^@/, '');
     const cleanTarget = (targetUsername || '').trim().toLowerCase().replace(/^@/, '');
-    if (!cleanFollower || !cleanTarget || cleanFollower === cleanTarget) {
+    if (!cleanFollower || !cleanTarget || cleanFollower === cleanTarget || isMockAccount(cleanFollower) || isMockAccount(cleanTarget)) {
       return { success: false, targetFollowers: 0, followerFollowing: 0 };
     }
 
@@ -430,6 +469,188 @@ export async function updateCreatorFollowersInSupabase(creatorIdOrUsername: stri
 }
 
 /**
+ * Get or initialize a unique persistent device installation viewer ID.
+ * This guarantees that even unauthenticated or guest users on separate physical devices
+ * have distinct viewer IDs and are each counted as 1 unique view.
+ */
+export function getOrCreateViewerDeviceId(): string {
+  try {
+    const key = 'valuvid_device_viewer_id';
+    let id = localStorage.getItem(key);
+    if (!id || id.trim() === '') {
+      id = 'dev_' + Math.random().toString(36).substring(2, 10) + '_' + Date.now().toString(36);
+      localStorage.setItem(key, id);
+    }
+    return id;
+  } catch {
+    return 'dev_' + Date.now().toString(36);
+  }
+}
+
+/**
+ * Record a real video view in Supabase and sync the total views count across all devices.
+ * Strict 1 view per user counting: each user only counts as 1 view on any video, regardless
+ * of how many times they watch, replay, or loop it.
+ */
+export async function recordVideoViewInSupabase(
+  videoId: string,
+  viewerUser?: { id?: string; username?: string; name?: string; avatar?: string } | null
+): Promise<{ success: boolean; views: number; isNewView: boolean }> {
+  try {
+    if (!videoId) return { success: false, views: 0, isNewView: false };
+
+    // Only record views for real logged-in users (skip anonymous/mock/guest @creator views)
+    const viewerUsername = (viewerUser?.username || '').trim().toLowerCase().replace(/^@/, '');
+    const viewerName = (viewerUser?.name || '').trim().toLowerCase();
+    if (!viewerUsername || isMockAccount(viewerUsername) || viewerName === 'valuvid creator') {
+      return { success: false, views: 0, isNewView: false };
+    }
+
+    // Resolve a stable unique user identifier
+    const rawUser = viewerUser?.id || viewerUsername;
+    const cleanUser = String(rawUser).trim().toLowerCase().replace(/^@/, '');
+
+    const viewRecordId = `view_${cleanUser}_${videoId}`;
+
+    // 1. Check if this user has already watched this video in Supabase
+    let isAlreadyRecorded = false;
+    try {
+      const { data: existingRecord } = await supabase
+        .from('videos')
+        .select('id')
+        .eq('id', viewRecordId)
+        .maybeSingle();
+      if (existingRecord?.id) {
+        isAlreadyRecorded = true;
+      }
+    } catch {}
+
+    // 2. Fetch current video row stats
+    const { data: vData } = await supabase
+      .from('videos')
+      .select('stats')
+      .eq('id', videoId)
+      .maybeSingle();
+
+    const currentStats = vData?.stats || {};
+    const curViews = typeof currentStats.views === 'number' ? currentStats.views : 0;
+
+    // 3. Count total unique viewer records for this video
+    let dbUniqueViewsCount: number | null = null;
+    try {
+      const countRes = await supabase
+        .from('videos')
+        .select('id', { count: 'exact', head: true })
+        .eq('category', 'view_record')
+        .eq('creator_data->>videoId', videoId);
+      dbUniqueViewsCount = countRes.count;
+    } catch {}
+
+    // If this user already counted their 1 view, strictly do NOT increment stats.views!
+    if (isAlreadyRecorded) {
+      const finalViews = (typeof dbUniqueViewsCount === 'number' && dbUniqueViewsCount > 0)
+        ? Math.max(curViews, dbUniqueViewsCount)
+        : Math.max(1, curViews);
+      return { success: true, views: finalViews, isNewView: false };
+    }
+
+    // 4. This is a NEW unique viewer: insert the view_record
+    try {
+      await supabase.from('videos').upsert({
+        id: viewRecordId,
+        title: `View: ${cleanUser}`,
+        caption: '[VIEW_RECORD]',
+        video_url: `valuvid://view/${cleanUser}/${videoId}`,
+        category: 'view_record',
+        creator_id: cleanUser,
+        creator_data: {
+          userId: viewerUser?.id || cleanUser,
+          username: viewerUser?.username || cleanUser,
+          name: viewerUser?.name || viewerUser?.username || cleanUser,
+          avatar: viewerUser?.avatar || '/default-avatar.svg',
+          videoId: videoId,
+          timestamp: new Date().toISOString(),
+        },
+      }, { onConflict: 'id' });
+    } catch (e) {
+      console.warn('[Supabase DB] Failed to upsert view record:', e);
+    }
+
+    // 5. Compute new view count based on unique users (1 view per user)
+    const effectiveCount = (typeof dbUniqueViewsCount === 'number' && dbUniqueViewsCount > 0)
+      ? Math.max(curViews + 1, dbUniqueViewsCount + 1)
+      : Math.max(curViews + 1, 1);
+
+    const updatedStats = {
+      ...currentStats,
+      views: effectiveCount,
+    };
+
+    const { error: updateErr } = await supabase
+      .from('videos')
+      .update({ stats: updatedStats })
+      .eq('id', videoId);
+
+    if (updateErr) {
+      console.warn('[Supabase DB] Failed to update video stats views:', updateErr.message);
+    }
+
+    return { success: !updateErr, views: effectiveCount, isNewView: true };
+  } catch (err) {
+    console.warn('[Supabase DB] recordVideoViewInSupabase error:', err);
+    return { success: false, views: 0, isNewView: false };
+  }
+}
+
+/**
+ * Fetch real viewers list for a video from Supabase view_records
+ */
+export async function fetchVideoViewersFromSupabase(videoId: string): Promise<any[]> {
+  try {
+    if (!videoId) return [];
+    const { data, error } = await supabase
+      .from('videos')
+      .select('creator_data, video_url, created_at')
+      .eq('category', 'view_record')
+      .or(`creator_data->>videoId.eq.${videoId},video_url.ilike.%${videoId}%`)
+      .limit(200);
+
+    if (error || !data) return [];
+    return data
+      .filter((r: any) => {
+        const uname = (r.creator_data?.username || '').trim().toLowerCase().replace(/^@/, '');
+        const name = (r.creator_data?.name || '').trim().toLowerCase();
+        return Boolean(uname) && !isMockAccount(uname) && name !== 'valuvid creator' && name !== 'valuvid viewer';
+      })
+      .map((r: any) => {
+      const ts = r.creator_data?.timestamp || r.created_at;
+      let watchedText = 'Just now';
+      if (ts) {
+        try {
+          const diffMin = Math.floor((Date.now() - new Date(ts).getTime()) / 60000);
+          if (diffMin < 2) watchedText = 'Just now';
+          else if (diffMin < 60) watchedText = `${diffMin}m ago`;
+          else if (diffMin < 1440) watchedText = `${Math.floor(diffMin / 60)}h ago`;
+          else watchedText = `${Math.floor(diffMin / 1440)}d ago`;
+        } catch {
+          watchedText = 'Recently';
+        }
+      }
+      return {
+        userId: r.creator_data?.userId || r.creator_data?.username || 'viewer',
+        username: (r.creator_data?.username || 'viewer').replace(/^@/, ''),
+        name: r.creator_data?.name || r.creator_data?.username || 'ValuVid Viewer',
+        avatar: r.creator_data?.avatar || '/default-avatar.svg',
+        watchedAt: watchedText,
+        watchDurationSec: r.creator_data?.watchDurationSec || 15,
+      };
+    });
+  } catch {
+    return [];
+  }
+}
+
+/**
  * Persistent deleted videos registry to prevent deleted videos from reappearing
  */
 export function getDeletedVideoIds(): string[] {
@@ -455,7 +676,7 @@ export async function fetchDeletedVideoIdsFromSupabase(): Promise<string[]> {
     const { data } = await supabase
       .from('videos')
       .select('id')
-      .or('category.eq.deleted,caption.eq.[DELETED]');
+      .or('category.eq.deleted,caption.eq.[DELETED],title.ilike.%[DELETED]%,caption.ilike.%[DELETED]%');
     if (data && data.length > 0) {
       data.forEach((row: any) => {
         if (row?.id) markVideoAsDeleted(row.id);
@@ -532,25 +753,32 @@ export async function fetchVideosFromSupabase(): Promise<VideoItem[] | null> {
       .neq('category', 'user_registry')
       .neq('category', 'follow_record')
       .neq('category', 'like_record')
+      .neq('category', 'view_record')
       .neq('category', 'deleted')
+      .not('title', 'ilike', '%[DELETED]%')
+      .not('caption', 'ilike', '%[DELETED]%')
       .order('created_at', { ascending: false })
-      .limit(50);
+      .limit(150);
 
     if (error || !data || data.length === 0) {
       return null;
     }
 
     const deletedIds = getDeletedVideoIds();
-    // Exclude mock seed videos, template samples, unpinned Yuri Boyka video, follow/like records, and any deleted videos
+    // Exclude mock seed videos, template samples, follow/like records, test user videos, and any deleted videos
     const cleanRows = data.filter((row: any) => 
       row.caption !== '[DELETED]' && 
       row.caption !== '[USER_REGISTRY]' &&
       row.caption !== '[FOLLOW_RECORD]' &&
       row.caption !== '[LIKE_RECORD]' &&
+      row.caption !== '[VIEW_RECORD]' &&
       row.category !== 'user_registry' &&
       row.category !== 'follow_record' &&
       row.category !== 'like_record' &&
+      row.category !== 'view_record' &&
       row.category !== 'deleted' &&
+      !(row.caption || '').includes('[DELETED]') &&
+      !(row.title || '').includes('[DELETED]') &&
       !deletedIds.includes(row.id) &&
       row.id !== 'vid-user-1' &&
       row.id !== 'vid-masterclass-1' &&
@@ -559,80 +787,126 @@ export async function fetchVideosFromSupabase(): Promise<VideoItem[] | null> {
       !row.id.startsWith('vid-sample') &&
       !row.id.startsWith('follow_') &&
       !row.id.startsWith('like_') &&
-      !row.id.startsWith('test') &&
-      !row.id.startsWith('test_') &&
-      row.id !== 'test_follow_record' &&
-      !(row.title || '').toLowerCase().includes('test follow')
+      (row.creator_data?.username || '').toLowerCase() !== 'mokarsstitches' &&
+      !row.id.includes('mokarsstitches') &&
+      !isTestUserOrMockVideo(row)
     );
 
     if (cleanRows.length === 0) {
       return [];
     }
 
-    const localVideoMap: Record<string, string> = {
-      'vid-user-1793762240324': '/videos/jet_li_vs_vandam.mp4',
-      'vid-user-1793762009385': '/videos/valuvid_promo_2.mp4',
-      'vid-user-1793677184654': '/videos/valuvid_promo_1.mp4',
-      'vid-user-1793676975715': '/videos/bruce_lee_vs_michael.mp4',
-    };
+    // Query live like_record and view_record rows to compute exact unique real-user engagement counts
+    const liveLikeUsers: Record<string, Set<string>> = {};
+    let likeQueryOk = false;
+    try {
+      const { data: likeRecords, error: likeErr } = await supabase
+        .from('videos')
+        .select('creator_id, creator_data, video_url')
+        .eq('category', 'like_record')
+        .limit(3000);
 
-    const localFallbackList = [
-      '/videos/jet_li_vs_vandam.mp4',
-      '/videos/valuvid_promo_1.mp4',
-      '/videos/bruce_lee_vs_michael.mp4',
-      '/videos/valuvid_promo_2.mp4',
-    ];
+      if (!likeErr && Array.isArray(likeRecords)) {
+        likeQueryOk = true;
+        likeRecords.forEach((lr: any) => {
+          const vid = lr.creator_data?.videoId || (lr.video_url?.startsWith('valuvid://like/') ? lr.video_url.split('/')[4] : null);
+          const actor = (lr.creator_data?.userId || lr.creator_id || '').toString().trim().toLowerCase().replace(/^@/, '');
+          if (vid && actor && !isMockAccount(actor)) {
+            if (!liveLikeUsers[vid]) liveLikeUsers[vid] = new Set();
+            liveLikeUsers[vid].add(actor);
+          }
+        });
+      }
+    } catch (e) {
+      console.warn('[Supabase DB] Error aggregating like records:', e);
+    }
+
+    const liveViewUsers: Record<string, Set<string>> = {};
+    let viewQueryOk = false;
+    try {
+      const { data: viewRecords, error: viewErr } = await supabase
+        .from('videos')
+        .select('creator_id, creator_data, video_url')
+        .eq('category', 'view_record')
+        .limit(3000);
+
+      if (!viewErr && Array.isArray(viewRecords)) {
+        viewQueryOk = true;
+        viewRecords.forEach((vr: any) => {
+          const vid = vr.creator_data?.videoId || (vr.video_url?.startsWith('valuvid://view/') ? vr.video_url.split('/')[4] : null);
+          const uname = (vr.creator_data?.username || vr.creator_id || '').toString().trim().toLowerCase().replace(/^@/, '');
+          const name = (vr.creator_data?.name || '').toString().trim().toLowerCase();
+          if (vid && uname && !isMockAccount(uname) && name !== 'valuvid creator' && name !== 'valuvid viewer') {
+            if (!liveViewUsers[vid]) liveViewUsers[vid] = new Set();
+            liveViewUsers[vid].add(uname);
+          }
+        });
+      }
+    } catch (e) {
+      console.warn('[Supabase DB] Error aggregating view records:', e);
+    }
+
+    const liveFollowersByUser: Record<string, Set<string>> = {};
+    const liveFollowingByUser: Record<string, Set<string>> = {};
+    let followQueryOk = false;
+    try {
+      const { data: followRecords, error: followErr } = await supabase
+        .from('videos')
+        .select('creator_id, creator_data')
+        .eq('category', 'follow_record')
+        .limit(3000);
+
+      if (!followErr && Array.isArray(followRecords)) {
+        followQueryOk = true;
+        followRecords.forEach((fr: any) => {
+          const follower = (fr.creator_data?.follower || fr.creator_id || '').toString().trim().toLowerCase().replace(/^@/, '');
+          const following = (fr.creator_data?.following || '').toString().trim().toLowerCase().replace(/^@/, '');
+          if (follower && following && follower !== following && !isMockAccount(follower) && !isMockAccount(following)) {
+            if (!liveFollowersByUser[following]) liveFollowersByUser[following] = new Set();
+            liveFollowersByUser[following].add(follower);
+            if (!liveFollowingByUser[follower]) liveFollowingByUser[follower] = new Set();
+            liveFollowingByUser[follower].add(following);
+          }
+        });
+      }
+    } catch (e) {
+      console.warn('[Supabase DB] Error aggregating follow records:', e);
+    }
 
     // Map DB columns back to frontend VideoItem interface
     return cleanRows.map((row: any) => {
-      let hash = 0;
-      const strId = String(row.id || '');
-      for (let i = 0; i < strId.length; i++) {
-        hash = (hash << 5) - hash + strId.charCodeAt(i);
-        hash |= 0;
-      }
-      const fallbackForId = localFallbackList[Math.abs(hash) % localFallbackList.length];
-
-      let semanticFallback = localVideoMap[row.id];
-      if (!semanticFallback) {
-        const t = (row.title || '').toLowerCase();
-        if (t.includes('jet li') || t.includes('wushu') || t.includes('vandam')) {
-          semanticFallback = '/videos/jet_li_vs_vandam.mp4';
-        } else if (t.includes('bruce lee') || t.includes('micheal') || t.includes('michael') || t.includes('boyka') || t.includes('ipman') || t.includes('tony jaa') || t.includes('kung fu') || t.includes('kutiti')) {
-          semanticFallback = '/videos/bruce_lee_vs_michael.mp4';
-        } else if (t.includes('advertising') || t.includes('promo 2')) {
-          semanticFallback = '/videos/valuvid_promo_2.mp4';
-        } else if (t.includes('join') || t.includes('monitiz') || t.includes('valuvid') || t.includes('tailorpro') || t.includes('creator')) {
-          semanticFallback = '/videos/valuvid_promo_1.mp4';
-        } else {
-          semanticFallback = fallbackForId;
-        }
-      }
-
       const isValidStream = row.video_url && 
         (row.video_url.startsWith('http://') || row.video_url.startsWith('https://') || row.video_url.startsWith('data:') || row.video_url.startsWith('/')) &&
         !row.video_url.includes('sample') &&
         !row.video_url.startsWith('blob:');
 
-      const streamUrl = isValidStream ? row.video_url : semanticFallback;
+      const streamUrl = isValidStream ? row.video_url : '';
 
       const creatorData = row.creator_data || {};
-      const cleanFollowers = typeof creatorData.followers === 'number'
-        ? Math.max(0, creatorData.followers)
-        : 0;
-      const cleanFollowing = typeof creatorData.following === 'number'
-        ? Math.max(0, creatorData.following)
-        : 0;
+      const cUsername = (creatorData.username || '').toString().trim().toLowerCase().replace(/^@/, '');
+      const dbFollowers = typeof creatorData.followers === 'number' ? Math.max(0, creatorData.followers) : 0;
+      const dbFollowing = typeof creatorData.following === 'number' ? Math.max(0, creatorData.following) : 0;
+      const cleanFollowers = followQueryOk && cUsername
+        ? (liveFollowersByUser[cUsername] ? liveFollowersByUser[cUsername].size : 0)
+        : dbFollowers;
+      const cleanFollowing = followQueryOk && cUsername
+        ? (liveFollowingByUser[cUsername] ? liveFollowingByUser[cUsername].size : 0)
+        : dbFollowing;
 
-      const rawLikes = typeof row.stats?.likes === 'number' ? Math.max(0, row.stats.likes) : 0;
+      const dbLikes = typeof row.stats?.likes === 'number' ? Math.max(0, row.stats.likes) : 0;
+      const recordsLikes = liveLikeUsers[row.id] ? liveLikeUsers[row.id].size : 0;
+      const rawLikes = likeQueryOk ? recordsLikes : dbLikes;
       const rawTips = typeof row.stats?.tipsTotalGHS === 'number' ? Math.max(0, row.stats.tipsTotalGHS) : 0;
       const rawTipsCount = typeof row.stats?.tipsCount === 'number' ? Math.max(0, row.stats.tipsCount) : 0;
       const rawShares = typeof row.stats?.shares === 'number' ? Math.max(0, row.stats.shares) : 0;
       const rawComments = typeof row.stats?.comments === 'number' ? Math.max(0, row.stats.comments) : (row.stats?.commentsList?.length ?? 0);
-      const rawViews = typeof row.stats?.views === 'number' ? Math.max(1, row.stats.views) : 1;
+      const dbViews = typeof row.stats?.views === 'number' ? Math.max(0, row.stats.views) : 0;
+      const recordsViews = liveViewUsers[row.id] ? liveViewUsers[row.id].size : 0;
+      const rawViews = viewQueryOk ? recordsViews : dbViews;
 
       return {
         id: row.id,
+        createdAt: row.created_at || row.creator_data?.createdAt,
         title: row.title,
         caption: row.caption,
         videoUrl: streamUrl,
@@ -948,6 +1222,7 @@ export async function saveUserProfileToSupabase(profile: {
   verified?: boolean;
   phone?: string;
   email?: string;
+  pinnedVideoIds?: string[];
 }): Promise<boolean> {
   try {
     const cleanUsername = profile.username.trim().toLowerCase().replace(/^@/, '');
@@ -989,6 +1264,7 @@ export async function saveUserProfileToSupabase(profile: {
         followers: profile.followers ?? 0,
         following: profile.following ?? 0,
         verified: profile.verified ?? false,
+        ...(Array.isArray(profile.pinnedVideoIds) ? { pinnedVideoIds: profile.pinnedVideoIds.slice(0, 3) } : {}),
       },
     };
 
@@ -1024,7 +1300,10 @@ export async function searchProfilesInSupabase(query: string) {
         .limit(20);
 
       if (!error && data && data.length > 0) {
-        return data;
+        const realProfiles = data.filter((p: any) => p.username && !isMockAccount(p.username));
+        if (realProfiles.length > 0) {
+          return realProfiles;
+        }
       }
     } catch {}
 
@@ -1040,16 +1319,11 @@ export async function searchProfilesInSupabase(query: string) {
       : ((await supabase.from('videos').select('creator_data').limit(150)).data || []);
 
     if (targetRows && targetRows.length > 0) {
-      const isMock = (uname?: string) => {
-        if (!uname) return true;
-        const u = uname.toLowerCase().replace(/^@/, '');
-        return u === 'emmanuel_creator' || u === 'kwame_code' || u === 'user_current' || u === 'user_fintech' || u === 'demo-creator-1' || u.startsWith('test');
-      };
       const results: any[] = [];
       const seen = new Set<string>();
       targetRows.forEach((row: any) => {
         const c = row.creator_data;
-        if (c && c.username && !isMock(c.username)) {
+        if (c && c.username && !isMockAccount(c.username)) {
           const u = c.username.toLowerCase();
           const n = (c.name || '').toLowerCase();
           if ((u.includes(clean) || n.includes(clean)) && !seen.has(u)) {
@@ -1093,37 +1367,81 @@ export async function fetchUserProfileFromSupabase(usernameOrId: string) {
       .eq('id', `user-profile-${clean}`)
       .maybeSingle();
 
-    // 2. Count live followers from follow_record rows
-    const { count: liveFollowers } = await supabase
+    // 2. Count live followers from follow_record rows (strictly real users)
+    const { data: followerRows } = await supabase
       .from('videos')
-      .select('id', { count: 'exact', head: true })
+      .select('creator_id, creator_data')
       .eq('category', 'follow_record')
       .eq('creator_data->>following', clean);
 
-    // 3. Count live following from follow_record rows
-    const { count: liveFollowing } = await supabase
+    const liveFollowers = Array.isArray(followerRows)
+      ? new Set(
+          followerRows
+            .map((r: any) => (r.creator_data?.follower || r.creator_id || '').toString().trim().toLowerCase().replace(/^@/, ''))
+            .filter((u: string) => Boolean(u) && !isMockAccount(u))
+        ).size
+      : null;
+
+    // 3. Count live following from follow_record rows (strictly real users)
+    const { data: followingRows } = await supabase
       .from('videos')
-      .select('id', { count: 'exact', head: true })
+      .select('creator_data')
       .eq('category', 'follow_record')
       .eq('creator_data->>follower', clean);
 
-    // 4. Calculate total likes across all creator videos
+    const liveFollowing = Array.isArray(followingRows)
+      ? new Set(
+          followingRows
+            .map((r: any) => (r.creator_data?.following || '').toString().trim().toLowerCase().replace(/^@/, ''))
+            .filter((u: string) => Boolean(u) && !isMockAccount(u))
+        ).size
+      : null;
+
+    // 4. Calculate total likes across all creator videos (combining db stats and live like records)
     const { data: creatorVideos } = await supabase
       .from('videos')
-      .select('stats')
+      .select('id, stats, creator_data')
       .neq('caption', '[DELETED]')
       .neq('category', 'deleted')
       .neq('category', 'user_registry')
       .neq('category', 'follow_record')
       .neq('category', 'like_record')
+      .neq('category', 'view_record')
       .or(`creator_id.eq.${clean},creator_data->>username.eq.${clean}`);
 
     let totalLikes = 0;
     if (creatorVideos && creatorVideos.length > 0) {
-      totalLikes = creatorVideos.reduce((sum: number, v: any) => sum + (Number(v.stats?.likes) || 0), 0);
+      const creatorVidIds = new Set(creatorVideos.map((v: any) => v.id));
+      const liveLikeUsers: Record<string, Set<string>> = {};
+      let likeQueryOk = false;
+      try {
+        const { data: likeRows, error: likeErr } = await supabase
+          .from('videos')
+          .select('creator_id, creator_data, video_url')
+          .eq('category', 'like_record')
+          .limit(3000);
+        if (!likeErr && likeRows) {
+          likeQueryOk = true;
+          likeRows.forEach((lr: any) => {
+            const vid = lr.creator_data?.videoId || (lr.video_url?.startsWith('valuvid://like/') ? lr.video_url.split('/')[4] : null);
+            const actor = (lr.creator_data?.userId || lr.creator_id || '').toString().trim().toLowerCase().replace(/^@/, '');
+            if (vid && creatorVidIds.has(vid) && actor && !isMockAccount(actor)) {
+              if (!liveLikeUsers[vid]) liveLikeUsers[vid] = new Set();
+              liveLikeUsers[vid].add(actor);
+            }
+          });
+        }
+      } catch {}
+
+      totalLikes = creatorVideos.reduce((sum: number, v: any) => {
+        const dbLike = Number(v.stats?.likes) || 0;
+        const liveLike = liveLikeUsers[v.id] ? liveLikeUsers[v.id].size : 0;
+        return sum + (likeQueryOk ? liveLike : dbLike);
+      }, 0);
     }
 
-    const cData = regRow?.creator_data || {};
+    const fallbackCreatorData = (creatorVideos && creatorVideos.length > 0 ? creatorVideos[0].creator_data : null) || {};
+    const cData = regRow?.creator_data || fallbackCreatorData;
     const finalFollowers = typeof liveFollowers === 'number' ? liveFollowers : (cData.followers || 0);
     const finalFollowing = typeof liveFollowing === 'number' ? liveFollowing : (cData.following || 0);
 
@@ -1137,10 +1455,64 @@ export async function fetchUserProfileFromSupabase(usernameOrId: string) {
       following: Math.max(0, finalFollowing),
       likes: Math.max(0, totalLikes),
       verified: cData.verified || false,
+      pinnedVideoIds: Array.isArray(cData.pinnedVideoIds) ? cData.pinnedVideoIds.slice(0, 3) : [],
     };
   } catch (err) {
     console.warn('[Supabase DB] Failed to fetch user profile:', err);
     return null;
+  }
+}
+
+/**
+ * Persist up to 3 pinned video IDs on the user's Supabase registry profile
+ */
+export async function savePinnedVideosInSupabase(
+  username: string,
+  pinnedVideoIds: string[],
+  fallbackProfile?: { id?: string; name?: string; avatar?: string; bio?: string }
+): Promise<boolean> {
+  try {
+    const clean = (username || '').trim().toLowerCase().replace(/^@/, '');
+    if (!clean) return false;
+    const capped = Array.from(new Set(pinnedVideoIds)).slice(0, 3);
+
+    const { data: existing } = await supabase
+      .from('videos')
+      .select('creator_id, creator_data')
+      .eq('id', `user-profile-${clean}`)
+      .maybeSingle();
+
+    const prevData = existing?.creator_data || {};
+    const creatorId = existing?.creator_id || fallbackProfile?.id || `usr-${clean}`;
+
+    const { error } = await supabase
+      .from('videos')
+      .upsert({
+        id: `user-profile-${clean}`,
+        title: `${prevData.name || fallbackProfile?.name || clean} Profile`,
+        caption: '[USER_REGISTRY]',
+        video_url: `valuvid://user/${clean}`,
+        category: 'user_registry',
+        creator_id: creatorId,
+        creator_data: {
+          ...prevData,
+          id: creatorId,
+          username: clean,
+          name: prevData.name || fallbackProfile?.name || clean,
+          avatar: prevData.avatar || fallbackProfile?.avatar || '/default-avatar.jpg',
+          bio: prevData.bio || fallbackProfile?.bio || 'ValuVid Creator 🇬🇭',
+          pinnedVideoIds: capped,
+        },
+      }, { onConflict: 'id' });
+
+    if (error) {
+      console.warn('[Supabase DB] Failed to save pinned videos:', error.message);
+      return false;
+    }
+    return true;
+  } catch (err) {
+    console.warn('[Supabase DB] savePinnedVideosInSupabase error:', err);
+    return false;
   }
 }
 
@@ -1160,7 +1532,9 @@ export async function fetchFollowersListFromSupabase(targetUsername: string): Pr
 
     if (error || !data || data.length === 0) return [];
     const usernames: string[] = data.map((r: any) => r.creator_id || r.creator_data?.follower).filter(Boolean);
-    const unique = Array.from(new Set(usernames.map(u => u.toLowerCase())));
+    const unique = Array.from(new Set(usernames.map(u => u.toLowerCase().replace(/^@/, '')))).filter(
+      (u) => Boolean(u) && !isMockAccount(u)
+    );
 
     const results: any[] = [];
     for (const u of unique) {
@@ -1203,7 +1577,9 @@ export async function fetchFollowingListFromSupabase(followerUsername: string): 
 
     if (error || !data || data.length === 0) return [];
     const usernames: string[] = data.map((r: any) => r.creator_data?.following).filter(Boolean);
-    const unique = Array.from(new Set(usernames.map(u => u.toLowerCase())));
+    const unique = Array.from(new Set(usernames.map(u => u.toLowerCase().replace(/^@/, '')))).filter(
+      (u) => Boolean(u) && !isMockAccount(u)
+    );
 
     const results: any[] = [];
     for (const u of unique) {

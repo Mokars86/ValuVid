@@ -93,10 +93,15 @@ export const BUNDLED_FALLBACK_VIDEOS = [
  * ensuring each video item on the feed plays its own distinct video stream.
  */
 export function getFallbackVideoForId(videoId?: string, fallbackUrl?: string, title?: string): string {
-  if (fallbackUrl && (fallbackUrl.startsWith('http://') || fallbackUrl.startsWith('https://') || fallbackUrl.startsWith('/'))) {
-    if (!fallbackUrl.startsWith('blob:') && !fallbackUrl.includes('sample')) {
+  if (fallbackUrl && (fallbackUrl.startsWith('http://') || fallbackUrl.startsWith('https://') || fallbackUrl.startsWith('/') || fallbackUrl.startsWith('blob:'))) {
+    if (!fallbackUrl.includes('sample')) {
       return fallbackUrl;
     }
+  }
+
+  // User uploaded videos should NEVER fallback to sample martial arts videos if fallbackUrl exists
+  if (videoId && videoId.startsWith('vid-user-') && fallbackUrl) {
+    return fallbackUrl;
   }
 
   const t = (title || '').toLowerCase();
@@ -139,10 +144,14 @@ export function getImmediateVideoUrl(videoId: string, fallbackUrl?: string, titl
       return objectUrl;
     } catch {}
   }
-  if (fallbackUrl && (fallbackUrl.startsWith('http://') || fallbackUrl.startsWith('https://') || fallbackUrl.startsWith('/'))) {
-    if (!fallbackUrl.startsWith('blob:') && !fallbackUrl.includes('sample')) {
+  if (fallbackUrl && (fallbackUrl.startsWith('http://') || fallbackUrl.startsWith('https://') || fallbackUrl.startsWith('/') || fallbackUrl.startsWith('blob:'))) {
+    if (!fallbackUrl.includes('sample')) {
       return fallbackUrl;
     }
+  }
+  // User uploads must NEVER be replaced by bundled sample/promo videos
+  if (videoId && videoId.startsWith('vid-user-')) {
+    return fallbackUrl || '';
   }
   return getFallbackVideoForId(videoId, fallbackUrl, title);
 }
@@ -184,17 +193,15 @@ export async function resolveLiveVideoUrl(videoId: string, fallbackUrl?: string,
     }
   }
 
-  // 3. If fallbackUrl is a remote HTTP / HTTPS CDN stream or local asset path
-  if (fallbackUrl && (fallbackUrl.startsWith('http://') || fallbackUrl.startsWith('https://') || fallbackUrl.startsWith('/'))) {
-    if (fallbackUrl.startsWith('blob:') || fallbackUrl.includes('sample')) {
-      const defFallback = getFallbackVideoForId(videoId, undefined, title);
-      return defFallback;
+  // 3. If fallbackUrl is a valid blob URL or remote HTTP / HTTPS CDN stream or local asset path
+  if (fallbackUrl && (fallbackUrl.startsWith('http://') || fallbackUrl.startsWith('https://') || fallbackUrl.startsWith('/') || fallbackUrl.startsWith('blob:'))) {
+    if (!fallbackUrl.includes('sample')) {
+      liveUrlCache.set(videoId, fallbackUrl);
+      if (!fallbackUrl.startsWith('/') && !fallbackUrl.startsWith('blob:')) {
+        fetchAndCacheMedia(videoId, fallbackUrl);
+      }
+      return fallbackUrl;
     }
-    liveUrlCache.set(videoId, fallbackUrl);
-    if (!fallbackUrl.startsWith('/')) {
-      fetchAndCacheMedia(videoId, fallbackUrl);
-    }
-    return fallbackUrl;
   }
 
   // 4. If fallbackUrl is empty, fetch stream URL directly from Supabase by primary key id
@@ -208,7 +215,7 @@ export async function resolveLiveVideoUrl(videoId: string, fallbackUrl?: string,
           const objectUrl = URL.createObjectURL(blob);
           liveUrlCache.set(videoId, objectUrl);
           return objectUrl;
-        } else if (fetchedStream.startsWith('http://') || fetchedStream.startsWith('https://') || fetchedStream.startsWith('/')) {
+        } else if (fetchedStream.startsWith('http://') || fetchedStream.startsWith('https://') || fetchedStream.startsWith('/') || fetchedStream.startsWith('blob:')) {
           if (!fetchedStream.includes('sample')) {
             liveUrlCache.set(videoId, fetchedStream);
             return fetchedStream;
@@ -218,19 +225,12 @@ export async function resolveLiveVideoUrl(videoId: string, fallbackUrl?: string,
     } catch {}
   }
 
-  // 5. Only check 'latest_upload' if this video IS the latest upload placeholder
-  if (videoId === 'latest_upload') {
-    try {
-      const latestBlob = await getMediaBlob('latest_upload');
-      if (latestBlob) {
-        const freshUrl = URL.createObjectURL(latestBlob);
-        liveUrlCache.set(videoId, freshUrl);
-        return freshUrl;
-      }
-    } catch {}
+  // 5. User-created videos must NEVER fall back to bundled martial arts / promo videos
+  if (videoId && videoId.startsWith('vid-user-')) {
+    return fallbackUrl || '';
   }
 
-  // 6. Return deterministic unique fallback for this videoId
+  // 6. Return deterministic unique fallback for non-user seed videos
   const finalFallback = getFallbackVideoForId(videoId, fallbackUrl, title);
   liveUrlCache.set(videoId, finalFallback);
   return finalFallback;

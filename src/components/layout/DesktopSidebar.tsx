@@ -31,7 +31,8 @@ export const DesktopSidebar: React.FC = () => {
     toggleTheme,
     setShowSettings,
     wallet,
-    openCashoutDrawer
+    openCashoutDrawer,
+    navBadges
   } = useApp();
 
   const isLight = theme === 'light';
@@ -137,11 +138,14 @@ export const DesktopSidebar: React.FC = () => {
             );
           }
 
+          const badgeCount = navBadges?.[item.id] || 0;
+          const badgeLabel = badgeCount > 9 ? '9+' : String(badgeCount);
+
           return (
             <button
               key={item.id}
               onClick={() => handleTabClick(item.id)}
-              className={`w-full py-3 px-3.5 rounded-2xl flex items-center gap-3.5 font-semibold text-sm transition-all duration-150 text-left ${
+              className={`w-full py-3 px-3.5 rounded-2xl flex items-center gap-3.5 font-semibold text-sm transition-all duration-150 text-left relative ${
                 isActive
                   ? isLight
                     ? 'bg-slate-100 text-slate-900 font-bold shadow-sm'
@@ -151,12 +155,17 @@ export const DesktopSidebar: React.FC = () => {
                   : 'text-neutral-400 hover:bg-white/5 hover:text-white'
               }`}
             >
-              <div className={`w-8 h-8 rounded-xl flex items-center justify-center transition-colors shrink-0 ${
+              <div className={`relative w-8 h-8 rounded-xl flex items-center justify-center transition-colors shrink-0 ${
                 isActive 
                   ? isLight ? 'bg-sky-500 text-white shadow-sm' : 'bg-gradient-to-tr from-[#00B2FE] to-[#FF9F0A] text-neutral-950 shadow-md'
                   : isLight ? 'bg-slate-100 text-slate-600' : 'bg-white/5 text-neutral-400'
               }`}>
                 <Icon className="w-4 h-4" />
+                {badgeCount > 0 && (
+                  <span className="absolute -top-1 -right-1 min-w-[16px] h-[16px] px-1 rounded-full bg-gradient-to-r from-rose-500 to-amber-500 text-white text-[9px] font-black leading-none flex items-center justify-center shadow-md">
+                    {badgeLabel}
+                  </span>
+                )}
               </div>
               <span className="flex-1">{item.label}</span>
               {item.badge && (

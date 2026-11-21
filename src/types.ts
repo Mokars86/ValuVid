@@ -28,6 +28,7 @@ export interface Creator {
   isHumanVerified?: boolean;
   authenticityScore?: number;
   certificates?: SkillCertificate[];
+  pinnedVideoIds?: string[];
 }
 
 export interface ValuSplitConfig {
@@ -74,6 +75,7 @@ export interface SkillQuiz {
 
 export interface VideoItem {
   id: string;
+  createdAt?: string;
   videoUrl: string;
   thumbnailUrl: string;
   title: string;
@@ -187,7 +189,7 @@ export interface BountyChallenge {
 
 export interface TransactionItem {
   id: string;
-  type: 'tip_received' | 'tip_sent' | 'watch_reward' | 'cashout' | 'content_unlock' | 'topup' | 'bounty_reward' | 'product_sale' | 'product_purchase';
+  type: 'tip_received' | 'tip_sent' | 'watch_reward' | 'cashout' | 'content_unlock' | 'topup' | 'bounty_reward' | 'product_sale' | 'product_purchase' | 'prediction_backing';
   title: string;
   subtitle: string;
   amountGHS: number;

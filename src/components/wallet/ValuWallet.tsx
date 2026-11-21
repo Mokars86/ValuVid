@@ -46,13 +46,38 @@ export const ValuWallet: React.FC = () => {
   const [topUpModalOpen, setTopUpModalOpen] = useState(false);
   const [addMethodModalOpen, setAddMethodModalOpen] = useState(false);
   const [topUpAmount, setTopUpAmount] = useState(50);
+  const [customTopUpInput, setCustomTopUpInput] = useState('50');
   const [isProcessingPaystack, setIsProcessingPaystack] = useState(false);
 
+  const parsedCustomTopUp = Number(customTopUpInput);
+  const effectiveTopUpAmount =
+    customTopUpInput.trim() !== '' && !isNaN(parsedCustomTopUp) && parsedCustomTopUp >= 1
+      ? Number(parsedCustomTopUp.toFixed(2))
+      : 0;
+
+  const handleSelectPresetTopUp = (amt: number) => {
+    setTopUpAmount(amt);
+    setCustomTopUpInput(String(amt));
+  };
+
+  const handleCustomTopUpChange = (val: string) => {
+    setCustomTopUpInput(val);
+    const num = Number(val);
+    if (!isNaN(num) && num >= 1) {
+      setTopUpAmount(Number(num.toFixed(2)));
+    }
+  };
+
   const handlePaystackTopUp = async () => {
+    if (effectiveTopUpAmount < 1) {
+      setShareToast('Please enter an amount of at least GHS 1.00');
+      return;
+    }
+    const amountToPay = effectiveTopUpAmount;
     setIsProcessingPaystack(true);
     await launchPaystackPayment({
       email: currentUser.email || `${currentUser.username || 'user'}@valuvid.app`,
-      amountGHS: topUpAmount,
+      amountGHS: amountToPay,
       metadata: {
         type: 'wallet_topup',
         username: currentUser.username,
@@ -60,7 +85,7 @@ export const ValuWallet: React.FC = () => {
       },
       onSuccess: (res) => {
         setIsProcessingPaystack(false);
-        addFundsToWallet(topUpAmount, res.reference, 'Paystack MoMo');
+        addFundsToWallet(amountToPay, res.reference, 'Paystack MoMo');
         confetti({
           particleCount: 80,
           spread: 70,
@@ -125,9 +150,9 @@ export const ValuWallet: React.FC = () => {
   };
 
   return (
-    <div className={`w-full h-full ${theme === 'light' ? 'bg-[#F8FAFC] text-slate-900' : 'bg-neutral-950 text-white'} flex flex-col overflow-y-auto overflow-x-hidden overscroll-contain max-w-full pb-32 select-none touch-pan-y transition-colors duration-200`}>
+    <div className={`w-full h-full ${theme === 'light' ? 'bg-[#F8FAFC] text-slate-900' : 'bg-neutral-950 text-white'} flex flex-col overflow-y-auto overflow-x-hidden overscroll-contain max-w-full pb-[max(6rem,calc(env(safe-area-inset-bottom,0px)+5.5rem))] select-none touch-pan-y transition-colors duration-200`}>
       {/* HEADER BAR */}
-      <div className={`sticky top-0 z-20 ${theme === 'light' ? 'bg-white/95 border-slate-200' : 'bg-neutral-950/90 border-neutral-900'} backdrop-blur-md px-3 sm:px-4 pt-8 sm:pt-4 pb-2.5 sm:pb-3 border-b flex items-center justify-between gap-2 max-w-full transition-colors`}>
+      <div className={`sticky top-0 z-20 ${theme === 'light' ? 'bg-white/95 border-slate-200' : 'bg-neutral-950/90 border-neutral-900'} backdrop-blur-md px-3 sm:px-4 pt-[max(2.25rem,calc(env(safe-area-inset-top,0px)+0.5rem))] sm:pt-4 pb-2.5 sm:pb-3 border-b flex items-center justify-between gap-2 max-w-full transition-colors`}>
         <div className="flex items-center gap-2 min-w-0">
           <div className="w-8 h-8 rounded-xl bg-gradient-to-tr from-amber-400 to-yellow-600 p-[1.5px] shrink-0">
             <div className={`w-full h-full ${theme === 'light' ? 'bg-amber-50' : 'bg-neutral-950'} rounded-[10px] flex items-center justify-center`}>
@@ -222,7 +247,7 @@ export const ValuWallet: React.FC = () => {
               } font-bold text-xs shadow-lg active:scale-95 transition-all flex items-center justify-center gap-1.5`}
             >
               <ArrowUpRight className="w-4 h-4" />
-              Cash Out Now
+              Request Cashout
             </button>
 
             <button
@@ -256,23 +281,25 @@ export const ValuWallet: React.FC = () => {
           </div>
 
           <div className="grid grid-cols-2 gap-2 text-[10px]">
-            <div className={`${theme === 'light' ? 'bg-slate-50 border-slate-200' : 'bg-neutral-950/70 border-neutral-800/80'} p-2 rounded-xl border`}>
-              <span className={`block ${theme === 'light' ? 'text-slate-500' : 'text-neutral-400'}`}>Free Account:</span>
-              <span className={`font-bold ${theme === 'light' ? 'text-slate-900' : 'text-white'}`}>1 Withdrawal / Week</span>
+            <div className={`${theme === 'light' ? 'bg-slate-50 border-slate-200' : 'bg-neutral-950/70 border-neutral-800/80'} p-2.5 rounded-xl border`}>
+              <span className={`block mb-0.5 ${theme === 'light' ? 'text-slate-500' : 'text-neutral-400'}`}>Free Tier:</span>
+              <span className={`font-bold text-xs ${theme === 'light' ? 'text-slate-900' : 'text-white'}`}>1 Withdrawal / Month</span>
+              <span className={`block text-[9px] mt-0.5 ${theme === 'light' ? 'text-slate-500' : 'text-neutral-400'}`}>Every 30 Days</span>
             </div>
-            <div className={`${theme === 'light' ? 'bg-slate-50 border-slate-200' : 'bg-neutral-950/70 border-neutral-800/80'} p-2 rounded-xl border`}>
-              <span className="text-amber-500 font-semibold block">Pro Subscribed:</span>
-              <span className={`font-bold ${theme === 'light' ? 'text-slate-900' : 'text-white'}`}>2 Withdrawals / Week</span>
+            <div className={`${theme === 'light' ? 'bg-amber-50/50 border-amber-200' : 'bg-amber-950/20 border-amber-500/30'} p-2.5 rounded-xl border`}>
+              <span className="text-amber-500 font-bold block mb-0.5">👑 Pro Subscribed:</span>
+              <span className={`font-bold text-xs ${theme === 'light' ? 'text-slate-900' : 'text-white'}`}>1 Withdrawal / Week</span>
+              <span className={`block text-[9px] mt-0.5 ${theme === 'light' ? 'text-amber-700' : 'text-amber-300'}`}>Expedited Every 7 Days</span>
             </div>
           </div>
 
           {/* User's Current Status */}
           <div className={`pt-2 border-t ${theme === 'light' ? 'border-slate-200' : 'border-neutral-800/60'} flex items-center justify-between text-[10px]`}>
             <span className={theme === 'light' ? 'text-slate-500' : 'text-neutral-400'}>
-              Your status: <strong className={theme === 'light' ? 'text-slate-900' : 'text-white'}>{cashoutLimitInfo.isProMember ? '👑 Pro Member' : '⚡ Free Tier'}</strong>
+              Your status: <strong className={theme === 'light' ? 'text-slate-900' : 'text-white'}>{cashoutLimitInfo.isProMember ? '👑 Pro Subscribed' : '⚡ Free Tier'}</strong>
             </span>
             <span className={`font-mono font-bold ${cashoutLimitInfo.remainingThisWeek > 0 ? (theme === 'light' ? 'text-emerald-600' : 'text-emerald-400') : 'text-rose-500'}`}>
-              {cashoutLimitInfo.remainingThisWeek} of {cashoutLimitInfo.maxPerWeek} cashout{cashoutLimitInfo.maxPerWeek > 1 ? 's' : ''} left
+              {cashoutLimitInfo.remainingThisWeek} of 1 cashout available this {cashoutLimitInfo.isProMember ? 'week' : 'month'}
             </span>
           </div>
 
@@ -430,6 +457,86 @@ export const ValuWallet: React.FC = () => {
           </div>
         </div>
 
+        {/* CASHOUT REQUESTS (24H PROCESSING) */}
+        <div className={`${theme === 'light' ? 'bg-white border-slate-200 shadow-sm' : 'bg-neutral-900 border-neutral-800'} border rounded-3xl p-4 w-full max-w-full overflow-hidden transition-colors`}>
+          <div className="flex items-center justify-between mb-3">
+            <div className="flex items-center gap-1.5">
+              <Clock className="w-4 h-4 text-amber-500" />
+              <div>
+                <h3 className={`text-xs font-bold ${theme === 'light' ? 'text-slate-900' : 'text-neutral-200'}`}>
+                  Cashout Requests
+                </h3>
+                <span className={`text-[10px] ${theme === 'light' ? 'text-slate-500' : 'text-neutral-400'}`}>
+                  24 hours processing time • Min GHS 50.00
+                </span>
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={openCashoutDrawer}
+              className="text-[11px] text-amber-500 font-bold flex items-center gap-1 hover:underline shrink-0"
+            >
+              <Plus className="w-3 h-3" />
+              New Request
+            </button>
+          </div>
+
+          {(() => {
+            const cashoutRequests = transactions.filter((tx) => tx.type === 'cashout');
+            if (cashoutRequests.length === 0) {
+              return (
+                <div className={`py-4 px-3 text-center rounded-2xl border ${
+                  theme === 'light' ? 'bg-slate-50 border-slate-200 text-slate-500' : 'bg-neutral-950/60 border-neutral-800/80 text-neutral-400'
+                } text-[11px]`}>
+                  No cashout requests yet. Requests are reviewed and processed within 24 hours.
+                </div>
+              );
+            }
+            return (
+              <div className="flex flex-col gap-2">
+                {cashoutRequests.slice(0, 5).map((req) => {
+                  const isPending = req.status === 'pending';
+                  return (
+                    <div
+                      key={req.id}
+                      className={`p-3 rounded-2xl border flex items-center justify-between gap-2 ${
+                        theme === 'light' ? 'bg-slate-50 border-slate-200' : 'bg-neutral-950 border-neutral-800/80'
+                      }`}
+                    >
+                      <div className="min-w-0 flex-1">
+                        <div className="flex items-center gap-1.5 flex-wrap">
+                          <span className={`text-xs font-bold truncate ${theme === 'light' ? 'text-slate-900' : 'text-white'}`}>
+                            {req.method || 'Mobile Money'}
+                          </span>
+                          <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded-full inline-flex items-center gap-1 ${
+                            isPending
+                              ? 'bg-amber-500/15 text-amber-500 border border-amber-500/30'
+                              : 'bg-emerald-500/15 text-emerald-500 border border-emerald-500/30'
+                          }`}>
+                            {isPending ? <Clock className="w-2.5 h-2.5" /> : <CheckCircle className="w-2.5 h-2.5" />}
+                            {isPending ? 'Pending (24h)' : 'Completed'}
+                          </span>
+                        </div>
+                        <p className={`text-[10px] truncate mt-0.5 ${theme === 'light' ? 'text-slate-500' : 'text-neutral-400'}`}>
+                          {req.subtitle}
+                        </p>
+                        {req.referenceId && (
+                          <p className={`text-[9px] font-mono mt-0.5 ${theme === 'light' ? 'text-slate-400' : 'text-neutral-500'}`}>
+                            Ref: {req.referenceId} • {req.timestamp}
+                          </p>
+                        )}
+                      </div>
+                      <div className={`text-xs font-black shrink-0 ${theme === 'light' ? 'text-slate-900' : 'text-white'}`}>
+                        GHS {Math.abs(req.amountGHS).toFixed(2)}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            );
+          })()}
+        </div>
+
         {/* RECENT EARNINGS FEED */}
         <div className="w-full max-w-full">
           <div className="flex items-center justify-between mb-3 gap-2">
@@ -569,9 +676,9 @@ export const ValuWallet: React.FC = () => {
                 <button
                   key={amt}
                   type="button"
-                  onClick={() => setTopUpAmount(amt)}
+                  onClick={() => handleSelectPresetTopUp(amt)}
                   className={`py-2 rounded-xl text-xs font-bold transition-all ${
-                    topUpAmount === amt
+                    effectiveTopUpAmount === amt && topUpAmount === amt
                       ? (theme === 'light' ? 'bg-amber-500 text-white font-black shadow-md' : 'bg-amber-500 text-neutral-950 font-black shadow-md')
                       : (theme === 'light' ? 'bg-slate-50 text-slate-700 border border-slate-200 hover:bg-slate-100' : 'bg-neutral-950 text-neutral-300 border border-neutral-800 hover:border-neutral-700')
                   }`}
@@ -579,6 +686,42 @@ export const ValuWallet: React.FC = () => {
                   GHS {amt}
                 </button>
               ))}
+            </div>
+
+            <div className="flex flex-col gap-1.5">
+              <label
+                htmlFor="custom-topup-amount"
+                className={`text-[11px] font-bold ${theme === 'light' ? 'text-slate-700' : 'text-neutral-300'}`}
+              >
+                Or enter custom amount (GHS)
+              </label>
+              <div className={`flex items-center rounded-xl border px-3 py-2 transition-colors ${
+                theme === 'light'
+                  ? 'bg-slate-50 border-slate-200 focus-within:border-amber-500 focus-within:bg-white'
+                  : 'bg-neutral-950 border-neutral-800 focus-within:border-amber-500'
+              }`}>
+                <span className={`text-xs font-black mr-2 select-none ${theme === 'light' ? 'text-slate-500' : 'text-neutral-400'}`}>
+                  GHS
+                </span>
+                <input
+                  id="custom-topup-amount"
+                  type="number"
+                  inputMode="decimal"
+                  min="1"
+                  step="any"
+                  value={customTopUpInput}
+                  onChange={(e) => handleCustomTopUpChange(e.target.value)}
+                  placeholder="Enter amount (min 1.00)"
+                  className={`w-full bg-transparent text-sm font-bold outline-none ${
+                    theme === 'light' ? 'text-slate-900 placeholder:text-slate-400' : 'text-white placeholder:text-neutral-600'
+                  }`}
+                />
+              </div>
+              {effectiveTopUpAmount < 1 && (
+                <p className="text-[10px] font-semibold text-rose-500">
+                  Minimum top-up amount is GHS 1.00
+                </p>
+              )}
             </div>
 
             <div className={`${
@@ -596,7 +739,7 @@ export const ValuWallet: React.FC = () => {
 
             <button
               onClick={handlePaystackTopUp}
-              disabled={isProcessingPaystack}
+              disabled={isProcessingPaystack || effectiveTopUpAmount < 1}
               className={`w-full py-3 rounded-xl font-bold text-xs shadow-lg active:scale-95 transition-all flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50 ${
                 theme === 'light'
                   ? 'bg-slate-900 hover:bg-slate-800 text-white shadow-slate-900/20'
@@ -605,7 +748,11 @@ export const ValuWallet: React.FC = () => {
             >
               <Zap className="w-4 h-4 fill-current" />
               <span>
-                {isProcessingPaystack ? 'Opening Paystack...' : `Pay GHS ${topUpAmount}.00 with Paystack`}
+                {isProcessingPaystack
+                  ? 'Opening Paystack...'
+                  : effectiveTopUpAmount >= 1
+                    ? `Pay GHS ${effectiveTopUpAmount.toFixed(2)} with Paystack`
+                    : 'Enter Amount to Pay'}
               </span>
             </button>
           </div>

@@ -2,7 +2,7 @@ import React, { useRef, useState, useEffect, useCallback } from 'react';
 import { Play, Pause, Volume2, VolumeX, Heart, Sparkles, Maximize2, Minimize2, X, RotateCw } from 'lucide-react';
 import { VideoItem } from '../../types';
 import { sounds } from '../../utils/soundEffects';
-import { resolveLiveVideoUrl, getImmediateVideoUrl } from '../../utils/mediaStorage';
+import { resolveLiveVideoUrl, getImmediateVideoUrl, getFallbackVideoForId } from '../../utils/mediaStorage';
 import { useApp } from '../../context/AppContext';
 import { App as CapApp } from '@capacitor/app';
 
@@ -12,6 +12,15 @@ interface VideoPlayerProps {
   onDoubleTapLike: () => void;
   isCleanScreen?: boolean;
   onToggleCleanScreen?: (clean: boolean) => void;
+  onPlaybackTimeUpdate?: (currentTime: number, duration: number, progressPercent: number) => void;
+  onPlaybackStart?: () => void;
+}
+
+interface FloatingHeart {
+  id: number;
+  x: number;
+  y: number;
+  rotate: number;
 }
 
 export const VideoPlayer: React.FC<VideoPlayerProps> = ({ 
@@ -19,19 +28,29 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
   isActive, 
   onDoubleTapLike,
   isCleanScreen = false,
-  onToggleCleanScreen
+  onToggleCleanScreen,
+  onPlaybackTimeUpdate,
+  onPlaybackStart
 }) => {
   const { isFeedMuted, setIsFeedMuted, isCinemaMode, setIsCinemaMode } = useApp();
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const bgAudioRef = useRef<HTMLAudioElement | null>(null);
   const [isPlaying, setIsPlaying] = useState(true);
   const [hasError, setHasError] = useState(false);
-  const [showHeartAnim, setShowHeartAnim] = useState(false);
-  const [heartPos, setHeartPos] = useState({ x: 50, y: 50 });
+  const [floatingHearts, setFloatingHearts] = useState<FloatingHeart[]>([]);
   const [lastTapTime, setLastTapTime] = useState(0);
   const [activeSrc, setActiveSrc] = useState<string>(() => getImmediateVideoUrl(video.id, video.videoUrl, video.title));
+  const [isResolvingSrc, setIsResolvingSrc] = useState<boolean>(() => !getImmediateVideoUrl(video.id, video.videoUrl, video.title));
   const [isVideoReady, setIsVideoReady] = useState(false);
   const pointerDownCoords = useRef<{ x: number; y: number } | null>(null);
+  const impressionCountedRef = useRef(false);
+
+  // Reset per-impression view flag when video changes or becomes inactive (swiped away)
+  useEffect(() => {
+    if (!isActive) {
+      impressionCountedRef.current = false;
+    }
+  }, [isActive, video.id]);
 
   // Landscape Detection & Cinema Theater Mode
   const [isLandscape, setIsLandscape] = useState<boolean>(() => {
@@ -123,18 +142,23 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
     const immediate = getImmediateVideoUrl(video.id, video.videoUrl, video.title);
     setActiveSrc(immediate);
     setHasError(false);
+    setIsVideoReady(false);
+    setIsResolvingSrc(!immediate);
 
     let isMounted = true;
     resolveLiveVideoUrl(video.id, video.videoUrl, video.title).then((resolved) => {
       if (isMounted) {
+        setIsResolvingSrc(false);
         if (resolved && resolved !== immediate) {
           setActiveSrc(resolved);
           setHasError(false);
         } else if (!immediate && !resolved) {
           setActiveSrc('');
-          setHasError(!video.thumbnailUrl);
+          setHasError(true);
         }
       }
+    }).catch(() => {
+      if (isMounted) setIsResolvingSrc(false);
     });
     return () => {
       isMounted = false;
@@ -148,6 +172,9 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
 
     if (isActive) {
       if (vid) {
+        if (vid.readyState >= 1) {
+          setIsVideoReady(true);
+        }
         vid.muted = isFeedMuted;
         const playPromise = vid.play();
         if (playPromise !== undefined) {
@@ -199,8 +226,16 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
   // Handle video playback failure
   const handleVideoError = useCallback(() => {
     console.warn('[VideoPlayer] Video source failed to play:', activeSrc);
+    if (!video.id.startsWith('vid-user-')) {
+      const fallback = getFallbackVideoForId(video.id, undefined, video.title);
+      if (fallback && activeSrc !== fallback) {
+        setActiveSrc(fallback);
+        setHasError(false);
+        return;
+      }
+    }
     setHasError(true);
-  }, [activeSrc]);
+  }, [activeSrc, video.id, video.title]);
 
   const handlePointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
     pointerDownCoords.current = { x: e.clientX, y: e.clientY };
@@ -222,14 +257,17 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
     const DOUBLE_TAP_DELAY = 280;
 
     if (now - lastTapTime < DOUBLE_TAP_DELAY) {
-      // Double tap detected -> Like video & floating heart animation
+      // Double tap detected -> Like video & TikTok-style floating heart particle at touch coordinate
       const rect = e.currentTarget.getBoundingClientRect();
       const x = ((e.clientX - rect.left) / rect.width) * 100;
       const y = ((e.clientY - rect.top) / rect.height) * 100;
+      const heartId = Date.now() + Math.random();
+      const tilt = Math.round((Math.random() - 0.5) * 44);
 
-      setHeartPos({ x, y });
-      setShowHeartAnim(true);
-      setTimeout(() => setShowHeartAnim(false), 900);
+      setFloatingHearts((prev) => [...prev, { id: heartId, x, y, rotate: tilt }]);
+      setTimeout(() => {
+        setFloatingHearts((prev) => prev.filter((h) => h.id !== heartId));
+      }, 850);
 
       onDoubleTapLike();
       sounds.playLikePop();
@@ -365,7 +403,7 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
       }`}
     >
       {/* 0ms Instant Poster Layer: Prevents black-screen flash while video decoder warms up */}
-      {video.thumbnailUrl && (
+      {video.thumbnailUrl && !video.thumbnailUrl.includes('avatar') && !video.thumbnailUrl.includes('dicebear') && (
         <img
           src={video.thumbnailUrl}
           alt={video.title}
@@ -381,7 +419,7 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
       )}
 
       {/* Ambient Glow Backdrop for Horizontal Landscape Videos */}
-      {isLandscape && !(isCinemaMode && isActive) && video.thumbnailUrl && (
+      {isLandscape && !(isCinemaMode && isActive) && video.thumbnailUrl && !video.thumbnailUrl.includes('avatar') && (
         <div 
           className="absolute inset-0 bg-cover bg-center filter blur-2xl opacity-40 scale-125 pointer-events-none select-none"
           style={{ backgroundImage: `url(${video.thumbnailUrl})` }}
@@ -423,9 +461,13 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
             if (videoRef.current) {
               const cur = videoRef.current.currentTime;
               const dur = videoRef.current.duration || 1;
-              setPlaybackProgress((cur / dur) * 100);
+              const progress = (cur / dur) * 100;
+              setPlaybackProgress(progress);
               setCurrentTimeSec(cur);
               setDurationSec(videoRef.current.duration || 0);
+              if (isActive && onPlaybackTimeUpdate) {
+                onPlaybackTimeUpdate(cur, videoRef.current.duration || 0, progress);
+              }
             }
           }}
           onLoadedData={() => {
@@ -447,11 +489,15 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
           onPlaying={() => {
             setIsPlaying(true);
             setIsVideoReady(true);
+            if (isActive && !impressionCountedRef.current) {
+              impressionCountedRef.current = true;
+              onPlaybackStart?.();
+            }
           }}
           onPause={() => setIsPlaying(false)}
           onCanPlay={() => {
             setIsVideoReady(true);
-            if (isActive && videoRef.current && videoRef.current.paused && isPlaying) {
+            if (isActive && videoRef.current && videoRef.current.paused) {
               videoRef.current.muted = isFeedMuted;
               videoRef.current.play().catch((err) => {
                 if (err?.name === 'NotAllowedError' && videoRef.current) {
@@ -494,30 +540,31 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
         />
       )}
 
-      {/* Dynamic aesthetic video simulator if offline or CDN error */}
-      {(hasError || !activeSrc) && (
-        <div className="relative w-full h-full flex flex-col items-center justify-center p-6 text-center bg-gradient-to-b from-neutral-900 via-neutral-950 to-amber-950/40">
-          <img
-            src={video.thumbnailUrl}
-            alt={video.title}
-            className="absolute inset-0 w-full h-full object-cover opacity-35 filter blur-xs"
-          />
+      {/* Clear unavailable state if video stream is missing or failed to load */}
+      {!isResolvingSrc && (hasError || !activeSrc) && (
+        <div className="relative w-full h-full flex flex-col items-center justify-center p-6 text-center bg-gradient-to-b from-neutral-900 via-neutral-950 to-black">
+          {video.thumbnailUrl && (
+            <img
+              src={video.thumbnailUrl}
+              alt={video.title}
+              className="absolute inset-0 w-full h-full object-cover opacity-30 filter blur-xs"
+            />
+          )}
           <div className="relative z-10 flex flex-col items-center max-w-xs">
-            <div className="w-16 h-16 rounded-full bg-amber-500/20 border border-amber-400/40 flex items-center justify-center mb-3 animate-pulse">
-              <Sparkles className="w-8 h-8 text-amber-400" />
+            <div className="w-14 h-14 rounded-full bg-amber-500/20 border border-amber-400/40 flex items-center justify-center mb-3">
+              <Sparkles className="w-7 h-7 text-amber-400" />
             </div>
-            <h3 className="text-lg font-bold text-white mb-1 leading-snug">{video.title}</h3>
-            <p className="text-xs text-amber-300 font-medium">ValuVid HD Stream Engine</p>
-            <div className="mt-4 flex items-center gap-2 bg-neutral-900/80 backdrop-blur-md px-3 py-1.5 rounded-full border border-neutral-700">
-              <span className="w-2 h-2 rounded-full bg-emerald-400 animate-ping" />
-              <span className="text-[11px] text-neutral-300">Live Attention Rewards Active</span>
-            </div>
+            <h3 className="text-base font-bold text-white mb-1 leading-snug">{video.title}</h3>
+            <p className="text-xs text-amber-300 font-medium">Video stream unavailable</p>
+            <p className="text-[11px] text-neutral-400 mt-1.5 leading-relaxed">
+              This video&apos;s media file was not synced to cloud storage when uploaded. Swipe up for the next video.
+            </p>
           </div>
         </div>
       )}
 
       {/* Play/Pause indicator overlay */}
-      {!isPlaying && (
+      {!isPlaying && !hasError && activeSrc && (
         <div className="absolute inset-0 z-20 flex items-center justify-center bg-black/25 backdrop-blur-[1px] pointer-events-none animate-fade-in">
           <div className="w-16 h-16 rounded-full bg-white/20 backdrop-blur-md flex items-center justify-center border border-white/40 shadow-xl">
             <Play className="w-8 h-8 text-white ml-1 fill-white" />
@@ -525,15 +572,27 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
         </div>
       )}
 
-      {/* Floating double-tap heart animation */}
-      {showHeartAnim && (
+      {/* TikTok-Style Floating Double-Tap Hearts */}
+      {floatingHearts.map((heart) => (
         <div
-          className="absolute z-30 pointer-events-none animate-heart-float"
-          style={{ left: `${heartPos.x}%`, top: `${heartPos.y}%`, transform: 'translate(-50%, -50%)' }}
+          key={heart.id}
+          className="absolute z-30 pointer-events-none"
+          style={{
+            left: `${heart.x}%`,
+            top: `${heart.y}%`,
+            transform: 'translate(-50%, -50%)',
+          }}
         >
-          <Heart className="w-24 h-24 text-rose-500 fill-rose-500 drop-shadow-[0_0_20px_rgba(244,63,94,0.9)]" />
+          <div
+            className="animate-heart-pop"
+            style={{
+              transform: `rotate(${heart.rotate}deg)`,
+            }}
+          >
+            <Heart className="w-24 h-24 text-[#FE2C55] fill-[#FE2C55] drop-shadow-[0_0_25px_rgba(254,44,85,0.85)]" />
+          </div>
         </div>
-      )}
+      ))}
 
       {/* Volume toggle button in corner */}
       {!(isCinemaMode && isActive) && (

@@ -12,7 +12,8 @@ export const BottomNav: React.FC = () => {
     setAuthModalOpen,
     setAuthMode,
     setShareToast,
-    theme
+    theme,
+    navBadges
   } = useApp();
 
   const isLightNav = theme === 'light' && activeTab !== 'feed';
@@ -30,7 +31,7 @@ export const BottomNav: React.FC = () => {
       isLightNav 
         ? 'bg-white border-t border-slate-200 shadow-[0_-4px_20px_rgba(0,0,0,0.06)]' 
         : 'bg-black border-t border-neutral-900 shadow-[0_-8px_25px_rgba(0,0,0,0.8)]'
-    } px-1 sm:px-4 py-2 sm:py-2.5 pb-[max(0.6rem,env(safe-area-inset-bottom,0px))] flex items-center justify-around select-none`}>
+    } px-1 sm:px-4 py-2 sm:py-2.5 pb-[max(0.6rem,calc(env(safe-area-inset-bottom,0px)+0.25rem))] flex items-center justify-around select-none`}>
       <div className="w-full max-w-md sm:max-w-xl md:max-w-2xl mx-auto flex items-center justify-around">
       {navItems.map((item) => {
         const Icon = item.icon;
@@ -114,6 +115,9 @@ export const BottomNav: React.FC = () => {
         }
 
         // Regular navigation items
+        const badgeCount = navBadges?.[item.id] || 0;
+        const badgeLabel = badgeCount > 9 ? '9+' : String(badgeCount);
+
         return (
           <button
             key={item.id}
@@ -136,6 +140,16 @@ export const BottomNav: React.FC = () => {
                       : 'text-white/70 hover:text-white stroke-[2]'
                 }`}
               />
+              {badgeCount > 0 && (
+                <span
+                  aria-label={`${badgeLabel} unread updates`}
+                  className={`absolute -top-1.5 -right-2.5 min-w-[17px] h-[17px] px-1 rounded-full bg-gradient-to-r from-rose-500 to-amber-500 text-white text-[9px] font-black leading-none flex items-center justify-center shadow-md ring-2 ${
+                    isLightNav ? 'ring-white' : 'ring-black'
+                  } animate-pulse`}
+                >
+                  {badgeLabel}
+                </span>
+              )}
             </div>
 
             <span
