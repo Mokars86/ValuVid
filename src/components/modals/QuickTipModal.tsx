@@ -4,6 +4,7 @@ import { Coins, Heart, Sparkles, X, CheckCircle, ShieldCheck, Plus, Smartphone, 
 import { useApp } from '../../context/AppContext';
 import { launchPaystackPayment } from '../../services/paystackService';
 import { getUserAvatar } from '../../utils/userDirectory';
+import { ghsFromUsd } from '../../utils/currency';
 
 export const QuickTipModal: React.FC = () => {
   const { tipModalVideo, closeTipModal, sendTip, wallet, addFundsToWallet, currentUser, theme } = useApp();
@@ -31,33 +32,34 @@ export const QuickTipModal: React.FC = () => {
 
   const isLight = theme === 'light';
 
-  const tipPresets = [2, 5, 10, 20, 50];
+  const tipPresets = [1, 5, 10, 25, 50];
   const finalAmount = isCustom ? parseFloat(customAmount) : selectedAmount;
   const validAmount = !isNaN(finalAmount) && finalAmount > 0 ? finalAmount : 0;
-  const isBalanceSufficient = wallet.balanceGHS >= validAmount;
-  const deficitAmount = Number(Math.max(0, validAmount - wallet.balanceGHS).toFixed(2));
+  const isBalanceSufficient = wallet.balanceUSD >= validAmount;
+  const deficitAmount = Number(Math.max(0, validAmount - wallet.balanceUSD).toFixed(2));
 
   // Escrow Split: 92% to creator, 8% platform fee
   const creatorTakeGHS = (validAmount * 0.92).toFixed(2);
   const platformFeeGHS = (validAmount * 0.08).toFixed(2);
 
-  const handleQuickTopUp = async (amount: number) => {
+  const handleQuickTopUp = async (amountUSD: number) => {
     if (isProcessingPaystack) return;
     setIsProcessingPaystack(true);
 
     await launchPaystackPayment({
       email: currentUser.email || `${currentUser.username || 'user'}@valuvid.app`,
-      amountGHS: amount,
+      amountGHS: ghsFromUsd(amountUSD),
       metadata: {
         type: 'wallet_topup',
+        amount_usd: amountUSD,
         username: currentUser.username,
         userId: currentUser.id,
         momo_channel: momoProvider,
       },
       onSuccess: (res) => {
         setIsProcessingPaystack(false);
-        addFundsToWallet(amount, res.reference, `Paystack ${momoProvider === 'mtn' ? 'MTN MoMo' : 'Telecel Cash'}`);
-        setTopUpToast(`+GHS ${amount.toFixed(2)} added to ValuWallet! 💳`);
+        addFundsToWallet(amountUSD, res.reference, `Paystack ${momoProvider === 'mtn' ? 'MTN MoMo' : 'Telecel Cash'}`);
+        setTopUpToast(`+$${amountUSD.toFixed(2)} USD added to ValuWallet! 💳`);
         setTimeout(() => setTopUpToast(null), 3000);
       },
       onClose: () => {
@@ -99,9 +101,10 @@ export const QuickTipModal: React.FC = () => {
 
     await launchPaystackPayment({
       email: currentUser.email || `${currentUser.username || 'user'}@valuvid.app`,
-      amountGHS: topUpRequired,
+      amountGHS: ghsFromUsd(topUpRequired),
       metadata: {
         type: 'creator_tip_topup',
+        amount_usd: topUpRequired,
         username: currentUser.username,
         userId: currentUser.id,
         creatorId: tipModalVideo.creator.id,
@@ -177,10 +180,10 @@ export const QuickTipModal: React.FC = () => {
             </div>
             <h4 className={`text-base font-bold ${isLight ? 'text-slate-900' : 'text-white'}`}>Tip Sent Successfully!</h4>
             <p className={`text-xs mt-1 ${isLight ? 'text-amber-800 font-semibold' : 'text-amber-300'}`}>
-              @{tipModalVideo.creator?.username || 'Creator'} received GHS {creatorTakeGHS} directly into their ValuWallet.
+              @{tipModalVideo.creator?.username || 'Creator'} received ${creatorTakeGHS} directly into their ValuWallet.
             </p>
             <span className={`text-[10px] mt-2 ${isLight ? 'text-slate-500' : 'text-neutral-400'}`}>
-              Platform service fee (8%): GHS {platformFeeGHS}
+              Platform service fee (8%): ${platformFeeGHS}
             </span>
           </div>
         ) : (
@@ -209,7 +212,7 @@ export const QuickTipModal: React.FC = () => {
               <div className="text-right shrink-0">
                 <span className={`text-[10px] block ${isLight ? 'text-slate-500' : 'text-neutral-400'}`}>Total Tips</span>
                 <span className={`text-xs font-bold ${isLight ? 'text-amber-700' : 'text-amber-400'}`}>
-                  GHS {(tipModalVideo.stats?.tipsTotalGHS || 0).toFixed(2)}
+                  ${(tipModalVideo.stats?.tipsTotalGHS || 0).toFixed(2)}
                 </span>
               </div>
             </div>
@@ -220,7 +223,7 @@ export const QuickTipModal: React.FC = () => {
                 <label className={`text-[11px] font-bold uppercase tracking-wider block ${isLight ? 'text-slate-700' : 'text-neutral-300'}`}>
                   Select Tip Amount
                 </label>
-                <span className={`text-[10px] ${isLight ? 'text-slate-500' : 'text-neutral-400'}`}>Ghana Cedis (GHS)</span>
+                <span className={`text-[10px] ${isLight ? 'text-slate-500' : 'text-neutral-400'}`}>US Dollars (USD)</span>
               </div>
 
               <div className="grid grid-cols-5 gap-1.5 mb-2">
@@ -242,7 +245,7 @@ export const QuickTipModal: React.FC = () => {
                               : 'bg-neutral-950 text-neutral-300 hover:bg-neutral-800 border border-neutral-800')
                       }`}
                     >
-                      GHS {amt}
+                      ${amt}
                     </button>
                   );
                 })}
@@ -265,7 +268,7 @@ export const QuickTipModal: React.FC = () => {
                   <div className={`flex-1 flex items-center rounded-lg px-2.5 py-1 border ${
                     isLight ? 'bg-slate-50 border-slate-200' : 'bg-neutral-950 border-neutral-800'
                   }`}>
-                    <span className={`text-xs font-bold mr-1 ${isLight ? 'text-amber-700' : 'text-amber-400'}`}>GHS</span>
+                    <span className={`text-xs font-bold mr-1 ${isLight ? 'text-amber-700' : 'text-amber-400'}`}>$</span>
                     <input
                       type="number"
                       step="0.5"
@@ -325,7 +328,7 @@ export const QuickTipModal: React.FC = () => {
                     ? (isLight ? 'text-emerald-700' : 'text-emerald-400')
                     : 'text-rose-500'
                 }`}>
-                  GHS {wallet.balanceGHS.toFixed(2)}
+                  ${wallet.balanceUSD.toFixed(2)} USD
                 </span>
               </div>
 
@@ -371,7 +374,7 @@ export const QuickTipModal: React.FC = () => {
                 </div>
 
                 <div className="grid grid-cols-4 gap-1.5">
-                  {[5, 10, 20, 50].map((topAmt) => (
+                  {[1, 5, 10, 25].map((topAmt) => (
                     <button
                       key={topAmt}
                       type="button"
@@ -384,7 +387,7 @@ export const QuickTipModal: React.FC = () => {
                       }`}
                     >
                       <Plus className="w-2.5 h-2.5" />
-                      <span>{topAmt}</span>
+                      <span>${topAmt}</span>
                     </button>
                   ))}
                 </div>
@@ -411,8 +414,8 @@ export const QuickTipModal: React.FC = () => {
                   <Coins className="w-4 h-4 text-slate-950" />
                   <span>
                     {isBalanceSufficient
-                      ? `Tip GHS ${validAmount.toFixed(2)} Instantly`
-                      : `Top-Up (+GHS ${deficitAmount.toFixed(2)}) & Tip GHS ${validAmount.toFixed(2)}`}
+                      ? `Tip $${validAmount.toFixed(2)} Instantly`
+                      : `Top-Up (+$${deficitAmount.toFixed(2)}) & Tip $${validAmount.toFixed(2)}`}
                   </span>
                 </>
               )}

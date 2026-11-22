@@ -15,6 +15,13 @@ import {
 } from 'lucide-react';
 import { useApp } from '../../context/AppContext';
 import { GHANA_BANKS } from '../../services/paystackService';
+import {
+  SupportedCurrency,
+  SUPPORTED_CASHOUT_CURRENCIES,
+  MIN_CASHOUT_USD,
+  convertUsdToCurrency,
+  formatCurrency,
+} from '../../utils/currency';
 
 export const CashoutDrawer: React.FC = () => {
   const { 
@@ -33,9 +40,16 @@ export const CashoutDrawer: React.FC = () => {
   const [selectedMethodId, setSelectedMethodId] = useState<string>(
     payoutMethods[0]?.id || ''
   );
-  const [cashoutAmount, setCashoutAmount] = useState<number>(50);
+  const [cashoutAmount, setCashoutAmount] = useState<number>(5);
+  const [payoutCurrency, setPayoutCurrency] = useState<SupportedCurrency>('GHS');
   const [isSuccess, setIsSuccess] = useState(false);
-  const [receiptData, setReceiptData] = useState<{ amount: number; method: string; ref: string; isPending?: boolean } | null>(null);
+  const [receiptData, setReceiptData] = useState<{
+    amountUSD: number;
+    convertedText: string;
+    method: string;
+    ref: string;
+    isPending?: boolean;
+  } | null>(null);
 
   // Quick inline add channel state inside drawer
   const [showAddInDrawer, setShowAddInDrawer] = useState(payoutMethods.length === 0);
@@ -74,18 +88,18 @@ export const CashoutDrawer: React.FC = () => {
       return;
     }
 
-    if (cashoutAmount < 50) {
-      alert('Minimum cashout threshold is GHS 50.00 (50 Cedis).');
+    if (cashoutAmount < MIN_CASHOUT_USD) {
+      alert(`Minimum cashout threshold is $${MIN_CASHOUT_USD.toFixed(2)} USD.`);
       return;
     }
 
-    if (cashoutAmount > wallet.balanceGHS) {
-      alert(`Insufficient funds. Your withdrawable balance is GHS ${wallet.balanceGHS.toFixed(2)}`);
+    if (cashoutAmount > wallet.balanceUSD) {
+      alert(`Insufficient funds. Your withdrawable balance is $${wallet.balanceUSD.toFixed(2)} USD.`);
       return;
     }
 
     const paystackTransferRef = `TRF_PSTK_${Date.now()}_${Math.random().toString(36).substring(2, 6).toUpperCase()}`;
-    const success = processCashout(selectedMethod.id, cashoutAmount, paystackTransferRef);
+    const success = processCashout(selectedMethod.id, cashoutAmount, paystackTransferRef, payoutCurrency);
     if (success) {
       confetti({
         particleCount: 100,
@@ -94,8 +108,10 @@ export const CashoutDrawer: React.FC = () => {
         colors: ['#10B981', '#F59E0B', '#3B82F6', '#FFFFFF'],
       });
 
+      const convertedAmt = convertUsdToCurrency(cashoutAmount, payoutCurrency);
       setReceiptData({
-        amount: cashoutAmount,
+        amountUSD: cashoutAmount,
+        convertedText: formatCurrency(convertedAmt, payoutCurrency),
         method: selectedMethod.name,
         ref: paystackTransferRef,
         isPending: true,
@@ -190,9 +206,15 @@ export const CashoutDrawer: React.FC = () => {
               theme === 'light' ? 'bg-slate-50 border-slate-200' : 'bg-neutral-950 border-neutral-800'
             } border rounded-2xl p-4 my-4 text-left flex flex-col gap-2`}>
               <div className={`flex items-center justify-between text-xs ${theme === 'light' ? 'text-slate-500' : 'text-neutral-400'}`}>
-                <span>Amount:</span>
+                <span>Wallet Amount:</span>
                 <span className="text-base font-black text-emerald-500">
-                  GHS {receiptData.amount.toFixed(2)}
+                  ${receiptData.amountUSD.toFixed(2)} USD
+                </span>
+              </div>
+              <div className={`flex items-center justify-between text-xs ${theme === 'light' ? 'text-slate-500' : 'text-neutral-400'}`}>
+                <span>Converted Payout:</span>
+                <span className={`font-bold ${theme === 'light' ? 'text-slate-900' : 'text-white'}`}>
+                  {receiptData.convertedText} ({payoutCurrency})
                 </span>
               </div>
               <div className={`flex items-center justify-between text-xs ${theme === 'light' ? 'text-slate-500' : 'text-neutral-400'}`}>
@@ -215,7 +237,7 @@ export const CashoutDrawer: React.FC = () => {
               </div>
               <div className={`flex items-center justify-between text-xs ${theme === 'light' ? 'text-slate-500 border-slate-200' : 'text-neutral-400 border-neutral-900'} pt-2 border-t`}>
                 <span>Network Processing Fee:</span>
-                <span className="text-emerald-500 font-bold">GHS 0.00 (Zero Fee)</span>
+                <span className="text-emerald-500 font-bold">$0.00 (Zero Fee)</span>
               </div>
             </div>
 
@@ -238,12 +260,12 @@ export const CashoutDrawer: React.FC = () => {
                 <div>
                   <span className={`text-[10px] ${theme === 'light' ? 'text-slate-500' : 'text-neutral-400'} block`}>Available Withdrawable Balance</span>
                   <span className={`text-xl font-black ${theme === 'light' ? 'text-slate-900' : 'text-white'}`}>
-                    GHS {wallet.balanceGHS.toFixed(2)}
+                    ${wallet.balanceUSD.toFixed(2)} USD
                   </span>
                 </div>
-                {wallet.balanceGHS >= 50 && (
+                {wallet.balanceUSD >= MIN_CASHOUT_USD && (
                   <button
-                    onClick={() => setCashoutAmount(Math.floor(wallet.balanceGHS))}
+                    onClick={() => setCashoutAmount(Number(wallet.balanceUSD.toFixed(2)))}
                     className={`px-2.5 py-1 ${
                       theme === 'light' ? 'bg-amber-100 border-amber-300 text-amber-800 hover:bg-amber-500 hover:text-white' : 'bg-amber-500/20 border-amber-400/40 text-amber-300 hover:bg-amber-500 hover:text-neutral-950'
                     } border rounded-lg text-xs font-bold transition-colors`}
@@ -253,19 +275,19 @@ export const CashoutDrawer: React.FC = () => {
                 )}
               </div>
 
-              {/* Progress to 50 Cedis minimum threshold */}
-              {wallet.balanceGHS < 50 && (
+              {/* Progress to $5.00 USD minimum threshold */}
+              {wallet.balanceUSD < MIN_CASHOUT_USD && (
                 <div className={`flex flex-col gap-1 pt-1.5 border-t ${theme === 'light' ? 'border-slate-200' : 'border-neutral-900'}`}>
                   <div className="flex items-center justify-between text-[10px]">
-                    <span className={theme === 'light' ? 'text-slate-500' : 'text-neutral-400'}>Withdrawal Threshold (50 Cedis):</span>
+                    <span className={theme === 'light' ? 'text-slate-500' : 'text-neutral-400'}>Withdrawal Threshold ($5.00 USD):</span>
                     <span className="font-bold text-amber-500">
-                      GHS {wallet.balanceGHS.toFixed(2)} / GHS 50.00 ({Math.min(100, Math.round((wallet.balanceGHS / 50) * 100))}%)
+                      ${wallet.balanceUSD.toFixed(2)} / ${MIN_CASHOUT_USD.toFixed(2)} ({Math.min(100, Math.round((wallet.balanceUSD / MIN_CASHOUT_USD) * 100))}%)
                     </span>
                   </div>
                   <div className={`w-full h-1.5 ${theme === 'light' ? 'bg-slate-200' : 'bg-neutral-900'} rounded-full overflow-hidden`}>
                     <div 
                       className="h-full bg-gradient-to-r from-amber-500 to-yellow-400 rounded-full transition-all duration-300"
-                      style={{ width: `${Math.min(100, Math.max(5, (wallet.balanceGHS / 50) * 100))}%` }}
+                      style={{ width: `${Math.min(100, Math.max(5, (wallet.balanceUSD / MIN_CASHOUT_USD) * 100))}%` }}
                     />
                   </div>
                 </div>
@@ -516,18 +538,18 @@ export const CashoutDrawer: React.FC = () => {
               )}
             </div>
 
-            {/* Preset Amounts (Minimum 50 Cedis) */}
+            {/* Preset Amounts (Minimum $5.00 USD) */}
             <div>
               <div className="flex items-center justify-between mb-2">
                 <label className={`text-[11px] font-bold ${theme === 'light' ? 'text-slate-700' : 'text-neutral-300'} uppercase tracking-wider block`}>
-                  Cash-Out Amount (GHS)
+                  Cash-Out Amount (USD)
                 </label>
                 <span className="text-[10px] text-amber-500 font-semibold font-mono">
-                  Min. 50 Cedis
+                  Min. $5.00 USD
                 </span>
               </div>
               <div className="grid grid-cols-4 gap-2 mb-2">
-                {[50, 100, 200, 500].map((amt) => (
+                {[5, 10, 25, 50].map((amt) => (
                   <button
                     key={amt}
                     type="button"
@@ -538,22 +560,50 @@ export const CashoutDrawer: React.FC = () => {
                         : (theme === 'light' ? 'bg-slate-100 text-slate-700 hover:bg-slate-200 border border-slate-200' : 'bg-neutral-950 text-neutral-300 hover:bg-neutral-800 border border-neutral-800')
                     }`}
                   >
-                    GHS {amt}
+                    ${amt}
                   </button>
                 ))}
               </div>
 
               <div className={`flex items-center ${theme === 'light' ? 'bg-slate-50 border-slate-200' : 'bg-neutral-950 border-neutral-800'} border rounded-xl px-3 py-2`}>
-                <span className="text-xs text-amber-500 font-bold mr-2">GHS</span>
+                <span className="text-xs text-amber-500 font-bold mr-2">$</span>
                 <input
                   type="number"
-                  min="50"
-                  step="1"
+                  min={MIN_CASHOUT_USD}
+                  step="any"
                   value={cashoutAmount || ''}
                   onChange={(e) => setCashoutAmount(parseFloat(e.target.value) || 0)}
-                  placeholder="Min. 50 Cedis"
+                  placeholder="Min. $5.00 USD"
                   className={`w-full bg-transparent text-xs font-bold ${theme === 'light' ? 'text-slate-900 placeholder-slate-400' : 'text-white placeholder-neutral-500'} focus:outline-none`}
                 />
+              </div>
+            </div>
+
+            {/* Local Payout Currency Conversion Selector */}
+            <div>
+              <div className="flex items-center justify-between mb-1.5">
+                <label className={`text-[11px] font-bold ${theme === 'light' ? 'text-slate-700' : 'text-neutral-300'} uppercase tracking-wider block`}>
+                  Receive Payout In
+                </label>
+                <span className="text-[10px] text-emerald-500 font-bold">
+                  Est. {formatCurrency(convertUsdToCurrency(cashoutAmount || 0, payoutCurrency), payoutCurrency)}
+                </span>
+              </div>
+              <div className="grid grid-cols-5 gap-1.5">
+                {SUPPORTED_CASHOUT_CURRENCIES.map((c) => (
+                  <button
+                    key={c.code}
+                    type="button"
+                    onClick={() => setPayoutCurrency(c.code)}
+                    className={`py-2 px-1 rounded-xl text-[11px] font-bold transition-all text-center border ${
+                      payoutCurrency === c.code
+                        ? (theme === 'light' ? 'bg-slate-900 text-white border-slate-900 font-black' : 'bg-amber-500 text-neutral-950 border-amber-500 font-black')
+                        : (theme === 'light' ? 'bg-slate-50 text-slate-700 border-slate-200 hover:bg-slate-100' : 'bg-neutral-950 text-neutral-300 border-neutral-800 hover:border-neutral-700')
+                    }`}
+                  >
+                    {c.code}
+                  </button>
+                ))}
               </div>
             </div>
 
@@ -563,7 +613,7 @@ export const CashoutDrawer: React.FC = () => {
             } p-2.5 rounded-xl border`}>
               <ShieldCheck className="w-4 h-4 text-emerald-500 shrink-0" />
               <span>
-                Zero withdrawal fees. Direct Paystack transfers to MTN MoMo, Telecel, or Ghanaian banks.
+                Zero withdrawal fees. Converted to {payoutCurrency} at payout and processed within 24 hours.
               </span>
             </div>
 
@@ -571,16 +621,16 @@ export const CashoutDrawer: React.FC = () => {
             <button
               onClick={handleCashout}
               disabled={
-                wallet.balanceGHS < 50 || 
-                cashoutAmount < 50 || 
-                cashoutAmount > wallet.balanceGHS || 
+                wallet.balanceUSD < MIN_CASHOUT_USD || 
+                cashoutAmount < MIN_CASHOUT_USD || 
+                cashoutAmount > wallet.balanceUSD || 
                 !selectedMethod || 
                 cashoutLimitInfo.remainingThisWeek <= 0
               }
               className={`w-full py-3.5 rounded-xl font-bold text-xs shadow-xl flex items-center justify-center gap-2 active:scale-95 transition-all cursor-pointer ${
-                wallet.balanceGHS >= 50 && 
-                cashoutAmount >= 50 && 
-                cashoutAmount <= wallet.balanceGHS && 
+                wallet.balanceUSD >= MIN_CASHOUT_USD && 
+                cashoutAmount >= MIN_CASHOUT_USD && 
+                cashoutAmount <= wallet.balanceUSD && 
                 selectedMethod && 
                 cashoutLimitInfo.remainingThisWeek > 0
                   ? (theme === 'light' ? 'bg-slate-900 hover:bg-slate-800 text-white shadow-slate-900/20' : 'bg-white hover:bg-neutral-100 text-black shadow-white/20 hover:scale-[1.01]')
@@ -589,17 +639,17 @@ export const CashoutDrawer: React.FC = () => {
             >
               <ArrowUpRight className="w-4 h-4" />
               <span>
-                {wallet.balanceGHS < 50
-                  ? `Min. GHS 50.00 Required (Have GHS ${wallet.balanceGHS.toFixed(2)})`
+                {wallet.balanceUSD < MIN_CASHOUT_USD
+                  ? `Min. $${MIN_CASHOUT_USD.toFixed(2)} USD Required (Have $${wallet.balanceUSD.toFixed(2)})`
                   : cashoutLimitInfo.remainingThisWeek <= 0
                   ? `${cashoutLimitInfo.isProMember ? 'Weekly' : 'Monthly'} Limit Reached (1x / ${cashoutLimitInfo.isProMember ? '7' : '30'} days)`
-                  : cashoutAmount < 50
-                  ? 'Minimum Withdrawal is GHS 50.00'
-                  : cashoutAmount > wallet.balanceGHS
+                  : cashoutAmount < MIN_CASHOUT_USD
+                  ? `Minimum Withdrawal is $${MIN_CASHOUT_USD.toFixed(2)} USD`
+                  : cashoutAmount > wallet.balanceUSD
                   ? 'Amount Exceeds Balance'
                   : !selectedMethod
                   ? 'Select or Add Payout Channel'
-                  : `Confirm Cashout of GHS ${cashoutAmount.toFixed(2)}`}
+                  : `Request $${cashoutAmount.toFixed(2)} USD (${formatCurrency(convertUsdToCurrency(cashoutAmount, payoutCurrency), payoutCurrency)})`}
               </span>
             </button>
           </>

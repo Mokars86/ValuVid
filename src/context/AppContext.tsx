@@ -52,6 +52,13 @@ import {
 } from '../utils/deviceFingerprint';
 import { recordKnownUser, isTestUserOrMockVideo, isMockAccount } from '../utils/userDirectory';
 import { INITIAL_COMMUNITY_VIDEOS, getInitialFeedVideos } from '../data/communityVideos';
+import {
+  SupportedCurrency,
+  MIN_CASHOUT_USD,
+  convertUsdToCurrency,
+  formatCurrency,
+  ghsFromUsd,
+} from '../utils/currency';
 
 interface AppContextType {
   activeTab: ActiveTab;
@@ -68,6 +75,10 @@ interface AppContextType {
   setCurrentVideoIndex: React.Dispatch<React.SetStateAction<number>>;
   requestedVideoId: string | null;
   clearRequestedVideoId: () => void;
+  miniPlayerVideo: { video: VideoItem; currentTime: number } | null;
+  reportActivePlayback: (video: VideoItem, currentTime: number, isPlaying: boolean) => void;
+  closeMiniPlayer: () => void;
+  expandMiniPlayer: () => void;
   discoverSearchQuery: string;
   setDiscoverSearchQuery: (query: string) => void;
   selectedCreatorProfile: Creator | null;
@@ -243,8 +254,8 @@ interface AppContextType {
   sendTip: (videoId: string, amountGHS: number, message?: string) => boolean;
   unlockContent: (videoId: string) => boolean;
   backPredictionWithWallet: (predId: string, predTitle: string, amountGHS?: number) => boolean;
-  processCashout: (methodId: string, amountGHS: number, customRef?: string) => boolean;
-  addFundsToWallet: (amountGHS: number, referenceId?: string, paymentMethod?: string) => void;
+  processCashout: (methodId: string, amountUSD: number, customRef?: string, payoutCurrency?: SupportedCurrency) => boolean;
+  addFundsToWallet: (amountUSD: number, referenceId?: string, paymentMethod?: string) => void;
   addPayoutMethod: (method: Omit<PayoutMethodItem, 'id'>) => string;
   deletePayoutMethod: (methodId: string) => void;
   setDefaultPayoutMethod: (methodId: string) => void;
@@ -374,6 +385,39 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const [currentVideoIndex, setCurrentVideoIndex] = useState(0);
   const [requestedVideoId, setRequestedVideoId] = useState<string | null>(null);
   const clearRequestedVideoId = useCallback(() => setRequestedVideoId(null), []);
+  const [miniPlayerVideo, setMiniPlayerVideo] = useState<{ video: VideoItem; currentTime: number } | null>(null);
+  const activePlaybackRef = React.useRef<{ video: VideoItem; currentTime: number; isPlaying: boolean } | null>(null);
+
+  const reportActivePlayback = useCallback((video: VideoItem, currentTime: number, isPlaying: boolean) => {
+    activePlaybackRef.current = { video, currentTime, isPlaying };
+    try {
+      const nativeBridge = (window as any)?.ValuVidNative;
+      if (nativeBridge && typeof nativeBridge.setPipActive === 'function') {
+        nativeBridge.setPipActive(Boolean(isPlaying));
+      }
+    } catch {}
+  }, []);
+
+  const closeMiniPlayer = useCallback(() => {
+    setMiniPlayerVideo(null);
+    if (activePlaybackRef.current) {
+      activePlaybackRef.current.isPlaying = false;
+    }
+    try {
+      const nativeBridge = (window as any)?.ValuVidNative;
+      if (nativeBridge && typeof nativeBridge.setPipActive === 'function') {
+        nativeBridge.setPipActive(false);
+      }
+    } catch {}
+  }, []);
+
+  const expandMiniPlayer = useCallback(() => {
+    if (miniPlayerVideo?.video) {
+      setRequestedVideoId(miniPlayerVideo.video.id);
+    }
+    setMiniPlayerVideo(null);
+    setActiveTab('feed');
+  }, [miniPlayerVideo]);
   const [discoverSearchQuery, setDiscoverSearchQuery] = useState('');
   const [selectedCreatorProfile, setSelectedCreatorProfile] = useState<Creator | null>(null);
 
@@ -1285,6 +1329,14 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   }, []);
 
   const handleSetActiveTab = useCallback((tab: ActiveTab) => {
+    if (activeTab === 'feed' && (tab === 'discover' || tab === 'wallet' || tab === 'profile')) {
+      const current = activePlaybackRef.current;
+      if (current?.isPlaying && current.video) {
+        setMiniPlayerVideo({ video: current.video, currentTime: current.currentTime });
+      }
+    } else if (tab === 'feed' || tab === 'create') {
+      setMiniPlayerVideo(null);
+    }
     setActiveTab(tab);
     if (tab === 'feed' || tab === 'profile') {
       refreshVideosFromSupabase();
@@ -1756,16 +1808,16 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       return false;
     }
 
-    const rewardGHS = 0.02;
+    const rewardUSD = 0.01;
 
     setWallet((w) => {
-      const nextGHS = Number((w.balanceGHS + rewardGHS).toFixed(2));
+      const nextUSD = Number((w.balanceUSD + rewardUSD).toFixed(2));
       const updated = {
         ...w,
-        balanceGHS: nextGHS,
-        balanceUSD: Number((nextGHS * GHS_TO_USD_RATE).toFixed(2)),
-        viewerWatchRewards: Number((w.viewerWatchRewards + rewardGHS).toFixed(2)),
-        personalWatchEarningsTodayGHS: Number((w.personalWatchEarningsTodayGHS + rewardGHS).toFixed(2)),
+        balanceUSD: nextUSD,
+        balanceGHS: ghsFromUsd(nextUSD),
+        viewerWatchRewards: Number((w.viewerWatchRewards + rewardUSD).toFixed(2)),
+        personalWatchEarningsTodayGHS: Number((w.personalWatchEarningsTodayGHS + rewardUSD).toFixed(2)),
       };
       try {
         localStorage.setItem('valuvid_user_wallet', JSON.stringify(updated));
@@ -1778,7 +1830,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       type: 'watch_reward',
       title: 'Viewer Watch-Time Micro-Reward',
       subtitle: videoTitle ? `Watched: "${videoTitle}"` : (creatorUsername ? `@${creatorUsername}'s video` : 'Earned for genuine video watch-time'),
-      amountGHS: rewardGHS,
+      amountGHS: rewardUSD,
       timestamp: 'Just now',
       status: 'completed',
       method: 'In-App Wallet',
@@ -2232,9 +2284,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     });
   }, [videos, currentUser]);
 
-  const sendTip = useCallback((videoId: string, amountGHS: number, message?: string): boolean => {
-    if (wallet.balanceGHS < amountGHS) {
-      alert(`Insufficient balance. Please add funds or cash in first! Balance: GHS ${wallet.balanceGHS.toFixed(2)}`);
+  const sendTip = useCallback((videoId: string, amountUSD: number, message?: string): boolean => {
+    if (wallet.balanceUSD < amountUSD) {
+      alert(`Insufficient balance. Please add funds first! Balance: $${wallet.balanceUSD.toFixed(2)} USD`);
       return false;
     }
 
@@ -2242,11 +2294,11 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
     // Deduct from wallet
     setWallet((w) => {
-      const nextGHS = Number((w.balanceGHS - amountGHS).toFixed(2));
+      const nextUSD = Number((w.balanceUSD - amountUSD).toFixed(2));
       return {
         ...w,
-        balanceGHS: nextGHS,
-        balanceUSD: Number((nextGHS * GHS_TO_USD_RATE).toFixed(2)),
+        balanceUSD: nextUSD,
+        balanceGHS: ghsFromUsd(nextUSD),
       };
     });
 
@@ -2258,12 +2310,12 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             ...v,
             stats: {
               ...v.stats,
-              tipsTotalGHS: Number((v.stats.tipsTotalGHS + amountGHS).toFixed(2)),
+              tipsTotalGHS: Number((v.stats.tipsTotalGHS + amountUSD).toFixed(2)),
               tipsCount: v.stats.tipsCount + 1,
             },
             creator: {
               ...v.creator,
-              totalTipsEarned: Number((v.creator.totalTipsEarned + amountGHS).toFixed(2)),
+              totalTipsEarned: Number((v.creator.totalTipsEarned + amountUSD).toFixed(2)),
             },
           };
         }
@@ -2272,7 +2324,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     );
 
     const targetVideo = videos.find((v) => v.id === videoId);
-    const creatorTakeGHS = Number((amountGHS * 0.92).toFixed(2));
+    const creatorTakeUSD = Number((amountUSD * 0.92).toFixed(2));
 
     // If the tipped creator is currentUser, credit their wallet & profile earnings
     if (targetVideo && (
@@ -2280,19 +2332,19 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       (targetVideo.creator.id && targetVideo.creator.id === currentUser.id)
     )) {
       setWallet((w) => {
-        const nextTips = Number(((w.creatorTipsEarned || 0) + creatorTakeGHS).toFixed(2));
-        const nextBalance = Number((w.balanceGHS + creatorTakeGHS).toFixed(2));
+        const nextTips = Number(((w.creatorTipsEarned || 0) + creatorTakeUSD).toFixed(2));
+        const nextBalanceUSD = Number((w.balanceUSD + creatorTakeUSD).toFixed(2));
         return {
           ...w,
-          balanceGHS: nextBalance,
-          balanceUSD: Number((nextBalance * GHS_TO_USD_RATE).toFixed(2)),
+          balanceUSD: nextBalanceUSD,
+          balanceGHS: ghsFromUsd(nextBalanceUSD),
           creatorTipsEarned: nextTips,
         };
       });
       setCurrentUser((prev) => {
         const updated = {
           ...prev,
-          totalTipsEarned: Number(((prev.totalTipsEarned || 0) + creatorTakeGHS).toFixed(2)),
+          totalTipsEarned: Number(((prev.totalTipsEarned || 0) + creatorTakeUSD).toFixed(2)),
         };
         try {
           localStorage.setItem('valuvid_user_profile', JSON.stringify(updated));
@@ -2303,9 +2355,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       const receiveTx: TransactionItem = {
         id: `tx-tip-rec-${Date.now()}`,
         type: 'tip_received',
-        title: `Community Tip Received (+GHS ${creatorTakeGHS.toFixed(2)})`,
+        title: `Community Tip Received (+$${creatorTakeUSD.toFixed(2)})`,
         subtitle: message ? `"${message}"` : `Direct creator support on "${targetVideo.title}"`,
-        amountGHS: creatorTakeGHS,
+        amountGHS: creatorTakeUSD,
         timestamp: 'Just now',
         status: 'completed',
         method: 'In-App Wallet',
@@ -2321,7 +2373,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       type: 'tip_sent',
       title: `Valu-Tip Sent to @${targetVideo?.creator.username || 'creator'}`,
       subtitle: message ? `"${message}"` : `Direct creator support on "${targetVideo?.title || 'video'}"`,
-      amountGHS: -amountGHS,
+      amountGHS: -amountUSD,
       timestamp: 'Just now',
       status: 'completed',
       method: 'In-App Wallet',
@@ -2343,7 +2395,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         text: message,
         createdAt: 'Just now',
         likes: 1,
-        tipAmountGHS: amountGHS,
+        tipAmountGHS: amountUSD,
       };
       setComments((prev) => {
         const next = {
@@ -2360,7 +2412,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }
 
     return true;
-  }, [wallet.balanceGHS, videos, currentUser]);
+  }, [wallet.balanceUSD, videos, currentUser]);
 
   const unlockContent = useCallback((videoId: string): boolean => {
     const video = videos.find((v) => v.id === videoId);
@@ -2447,16 +2499,21 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     return true;
   }, [wallet.balanceGHS]);
 
-  const processCashout = useCallback((methodId: string, amountGHS: number, customRef?: string): boolean => {
-    // 1. Minimum withdrawal threshold check (GHS 50.00)
-    if (amountGHS < 50.00) {
-      alert(`Minimum withdrawal threshold is GHS 50.00 (50 Cedis). You entered GHS ${amountGHS.toFixed(2)}.`);
+  const processCashout = useCallback((
+    methodId: string,
+    amountUSD: number,
+    customRef?: string,
+    payoutCurrency: SupportedCurrency = 'USD'
+  ): boolean => {
+    // 1. Minimum withdrawal threshold check ($5.00 USD)
+    if (amountUSD < MIN_CASHOUT_USD) {
+      alert(`Minimum withdrawal threshold is $${MIN_CASHOUT_USD.toFixed(2)} USD. You entered $${amountUSD.toFixed(2)}.`);
       return false;
     }
 
     // 2. Insufficient funds check
-    if (wallet.balanceGHS < amountGHS) {
-      alert(`Insufficient funds. Your withdrawable balance is GHS ${wallet.balanceGHS.toFixed(2)}.`);
+    if (wallet.balanceUSD < amountUSD) {
+      alert(`Insufficient funds. Your withdrawable balance is $${wallet.balanceUSD.toFixed(2)} USD.`);
       return false;
     }
 
@@ -2492,23 +2549,27 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     sounds.playSuccessPayout();
 
     setWallet((w) => {
-      const nextGHS = Number((w.balanceGHS - amountGHS).toFixed(2));
+      const nextUSD = Number((w.balanceUSD - amountUSD).toFixed(2));
       return {
         ...w,
-        balanceGHS: nextGHS,
-        balanceUSD: Number((nextGHS * GHS_TO_USD_RATE).toFixed(2)),
+        balanceUSD: nextUSD,
+        balanceGHS: ghsFromUsd(nextUSD),
       };
     });
 
     // All cashout requests enter the 24-hour review & payout queue ('pending')
     const txStatus: 'pending' | 'completed' = 'pending';
+    const convertedAmount = convertUsdToCurrency(amountUSD, payoutCurrency);
+    const conversionLabel = payoutCurrency === 'USD'
+      ? `$${amountUSD.toFixed(2)} USD`
+      : `$${amountUSD.toFixed(2)} USD → ${formatCurrency(convertedAmount, payoutCurrency)}`;
 
     const newTx: TransactionItem = {
       id: `tx-cashout-${Date.now()}`,
       type: 'cashout',
       title: `Cashout Request (${method?.name || 'Mobile Money'})`,
-      subtitle: `Processing within 24 hours • To ${method?.accountNumber || 'Primary Channel'} (${method?.accountHolder || currentUser.name || 'User'})`,
-      amountGHS: -amountGHS,
+      subtitle: `Processing within 24 hours • ${conversionLabel} • To ${method?.accountNumber || 'Primary Channel'} (${method?.accountHolder || currentUser.name || 'User'})`,
+      amountGHS: -amountUSD,
       timestamp: 'Just now',
       status: txStatus,
       method: (method?.name as any) || 'MTN MoMo',
@@ -2525,33 +2586,33 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     } catch {}
 
     return true;
-  }, [wallet.balanceGHS, payoutMethods, cashoutTimestamps, isProMember, currentUser]);
+  }, [wallet.balanceUSD, payoutMethods, cashoutTimestamps, isProMember, currentUser]);
 
-  const addFundsToWallet = useCallback((amountGHS: number, referenceId?: string, paymentMethod?: string) => {
+  const addFundsToWallet = useCallback((amountUSD: number, referenceId?: string, paymentMethod?: string) => {
     sounds.playCoinTip();
     setWallet((w) => {
-      const nextGHS = Number((w.balanceGHS + amountGHS).toFixed(2));
+      const nextUSD = Number((w.balanceUSD + amountUSD).toFixed(2));
       return {
         ...w,
-        balanceGHS: nextGHS,
-        balanceUSD: Number((nextGHS * GHS_TO_USD_RATE).toFixed(2)),
+        balanceUSD: nextUSD,
+        balanceGHS: ghsFromUsd(nextUSD),
       };
     });
 
     const newTx: TransactionItem = {
       id: `tx-topup-${Date.now()}`,
       type: 'topup',
-      title: `Wallet Top-Up (${paymentMethod || 'Paystack MoMo'})`,
-      subtitle: 'Funds added to tip favorite creators & unlock content',
-      amountGHS: amountGHS,
+      title: `Wallet Top-Up (${paymentMethod || 'Paystack'})`,
+      subtitle: 'Funds added in USD to tip favorite creators & unlock content',
+      amountGHS: amountUSD,
       timestamp: 'Just now',
       status: 'completed',
-      method: paymentMethod || 'MTN MoMo',
+      method: paymentMethod || 'Paystack',
       referenceId: referenceId || `PAY-${Math.floor(10000 + Math.random() * 90000)}`,
     };
     setTransactions((prev) => [newTx, ...prev]);
-    recordTransactionToSupabase(newTx);
-  }, []);
+    recordTransactionToSupabase(newTx, currentUser.username || currentUser.id);
+  }, [currentUser]);
 
   const addPayoutMethod = useCallback((method: Omit<PayoutMethodItem, 'id'>): string => {
     // Validate payout channel exclusivity (1 MoMo/Bank number = 1 Creator)
@@ -3379,6 +3440,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         setCurrentVideoIndex,
         requestedVideoId,
         clearRequestedVideoId,
+        miniPlayerVideo,
+        reportActivePlayback,
+        closeMiniPlayer,
+        expandMiniPlayer,
         discoverSearchQuery,
         setDiscoverSearchQuery,
         selectedCreatorProfile,

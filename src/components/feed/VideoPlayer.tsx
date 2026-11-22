@@ -32,7 +32,7 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
   onPlaybackTimeUpdate,
   onPlaybackStart
 }) => {
-  const { isFeedMuted, setIsFeedMuted, isCinemaMode, setIsCinemaMode } = useApp();
+  const { isFeedMuted, setIsFeedMuted, isCinemaMode, setIsCinemaMode, reportActivePlayback } = useApp();
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const bgAudioRef = useRef<HTMLAudioElement | null>(null);
   const [isPlaying, setIsPlaying] = useState(true);
@@ -164,6 +164,27 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
       isMounted = false;
     };
   }, [video.id, video.videoUrl, video.thumbnailUrl]);
+
+  // Browser Picture-in-Picture on tab/app minimize when video is actively playing
+  useEffect(() => {
+    const handleVisibility = () => {
+      const vid = videoRef.current as (HTMLVideoElement & { requestPictureInPicture?: () => Promise<any> }) | null;
+      if (!vid || !isActive) return;
+      if (document.visibilityState === 'hidden') {
+        if (!vid.paused && document.pictureInPictureEnabled && typeof vid.requestPictureInPicture === 'function') {
+          vid.requestPictureInPicture().catch(() => {});
+        }
+      } else if (document.visibilityState === 'visible') {
+        if (document.pictureInPictureElement === vid && typeof document.exitPictureInPicture === 'function') {
+          document.exitPictureInPicture().catch(() => {});
+        }
+      }
+    };
+    document.addEventListener('visibilitychange', handleVisibility);
+    return () => {
+      document.removeEventListener('visibilitychange', handleVisibility);
+    };
+  }, [isActive]);
 
   // Synchronize playback with active feed slide and mute settings
   useEffect(() => {
@@ -465,8 +486,11 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
               setPlaybackProgress(progress);
               setCurrentTimeSec(cur);
               setDurationSec(videoRef.current.duration || 0);
-              if (isActive && onPlaybackTimeUpdate) {
-                onPlaybackTimeUpdate(cur, videoRef.current.duration || 0, progress);
+              if (isActive) {
+                reportActivePlayback(video, cur, !videoRef.current.paused);
+                if (onPlaybackTimeUpdate) {
+                  onPlaybackTimeUpdate(cur, videoRef.current.duration || 0, progress);
+                }
               }
             }
           }}
@@ -489,12 +513,20 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
           onPlaying={() => {
             setIsPlaying(true);
             setIsVideoReady(true);
+            if (isActive) {
+              reportActivePlayback(video, videoRef.current?.currentTime || 0, true);
+            }
             if (isActive && !impressionCountedRef.current) {
               impressionCountedRef.current = true;
               onPlaybackStart?.();
             }
           }}
-          onPause={() => setIsPlaying(false)}
+          onPause={() => {
+            setIsPlaying(false);
+            if (isActive) {
+              reportActivePlayback(video, videoRef.current?.currentTime || 0, false);
+            }
+          }}
           onCanPlay={() => {
             setIsVideoReady(true);
             if (isActive && videoRef.current && videoRef.current.paused) {

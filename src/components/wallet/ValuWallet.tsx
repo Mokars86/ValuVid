@@ -22,6 +22,7 @@ import {
 import { useApp } from '../../context/AppContext';
 import { TransactionItem, PayoutMethodItem } from '../../types';
 import { launchPaystackPayment, getPlatformCommissionPercent, GHANA_BANKS } from '../../services/paystackService';
+import { MIN_CASHOUT_USD, ghsFromUsd } from '../../utils/currency';
 
 export const ValuWallet: React.FC = () => {
   const { 
@@ -45,8 +46,8 @@ export const ValuWallet: React.FC = () => {
   const [activeFilter, setActiveFilter] = useState<'all' | 'tips' | 'rewards' | 'cashouts'>('all');
   const [topUpModalOpen, setTopUpModalOpen] = useState(false);
   const [addMethodModalOpen, setAddMethodModalOpen] = useState(false);
-  const [topUpAmount, setTopUpAmount] = useState(50);
-  const [customTopUpInput, setCustomTopUpInput] = useState('50');
+  const [topUpAmount, setTopUpAmount] = useState(5);
+  const [customTopUpInput, setCustomTopUpInput] = useState('5');
   const [isProcessingPaystack, setIsProcessingPaystack] = useState(false);
 
   const parsedCustomTopUp = Number(customTopUpInput);
@@ -70,22 +71,24 @@ export const ValuWallet: React.FC = () => {
 
   const handlePaystackTopUp = async () => {
     if (effectiveTopUpAmount < 1) {
-      setShareToast('Please enter an amount of at least GHS 1.00');
+      setShareToast('Please enter an amount of at least $1.00 USD');
       return;
     }
-    const amountToPay = effectiveTopUpAmount;
+    const amountUSD = effectiveTopUpAmount;
+    const paystackChargeGHS = ghsFromUsd(amountUSD);
     setIsProcessingPaystack(true);
     await launchPaystackPayment({
       email: currentUser.email || `${currentUser.username || 'user'}@valuvid.app`,
-      amountGHS: amountToPay,
+      amountGHS: paystackChargeGHS,
       metadata: {
         type: 'wallet_topup',
+        amount_usd: amountUSD,
         username: currentUser.username,
         userId: currentUser.id,
       },
       onSuccess: (res) => {
         setIsProcessingPaystack(false);
-        addFundsToWallet(amountToPay, res.reference, 'Paystack MoMo');
+        addFundsToWallet(amountUSD, res.reference, 'Paystack');
         confetti({
           particleCount: 80,
           spread: 70,
@@ -161,7 +164,7 @@ export const ValuWallet: React.FC = () => {
           </div>
           <div className="min-w-0">
             <h1 className={`text-sm sm:text-base font-bold leading-none truncate ${theme === 'light' ? 'text-slate-900' : 'text-white'}`}>ValuWallet</h1>
-            <span className={`text-[9px] sm:text-[10px] ${theme === 'light' ? 'text-slate-500' : 'text-neutral-400'} truncate block`}>Ghanaian Cedi & USD</span>
+            <span className={`text-[9px] sm:text-[10px] ${theme === 'light' ? 'text-slate-500' : 'text-neutral-400'} truncate block`}>USD Wallet • Pan-African Payouts</span>
           </div>
         </div>
 
@@ -208,10 +211,10 @@ export const ValuWallet: React.FC = () => {
 
           <div className="flex items-baseline gap-2 mb-3">
             <span className={`text-3xl font-black tracking-tight ${theme === 'light' ? 'text-slate-900' : 'text-white'}`}>
-              GHS {wallet.balanceGHS.toFixed(2)}
+              ${wallet.balanceUSD.toFixed(2)}
             </span>
             <span className={`text-sm font-semibold ${theme === 'light' ? 'text-slate-500' : 'text-neutral-400'}`}>
-              ≈ ${wallet.balanceUSD.toFixed(2)} USD
+              USD
             </span>
           </div>
 
@@ -223,7 +226,7 @@ export const ValuWallet: React.FC = () => {
                 <span>Creator Tips Earned</span>
               </div>
               <div className={`text-sm font-bold ${theme === 'light' ? 'text-slate-900' : 'text-white'}`}>
-                GHS {wallet.creatorTipsEarned.toFixed(2)}
+                ${wallet.creatorTipsEarned.toFixed(2)}
               </div>
             </div>
 
@@ -233,7 +236,7 @@ export const ValuWallet: React.FC = () => {
                 <span>Watch Rewards</span>
               </div>
               <div className={`text-sm font-bold ${theme === 'light' ? 'text-slate-900' : 'text-white'}`}>
-                GHS {wallet.viewerWatchRewards.toFixed(2)}
+                ${wallet.viewerWatchRewards.toFixed(2)}
               </div>
             </div>
           </div>
@@ -303,19 +306,19 @@ export const ValuWallet: React.FC = () => {
             </span>
           </div>
 
-          {/* Progress to 50 Cedis threshold */}
-          {wallet.balanceGHS < 50 && (
+          {/* Progress to $5.00 USD threshold */}
+          {wallet.balanceUSD < MIN_CASHOUT_USD && (
             <div className={`flex flex-col gap-1 pt-1 border-t ${theme === 'light' ? 'border-slate-200' : 'border-neutral-800/40'}`}>
               <div className="flex items-center justify-between text-[9px]">
                 <span className={theme === 'light' ? 'text-slate-500' : 'text-neutral-400'}>Progress to Minimum Cashout:</span>
                 <span className="font-bold text-amber-500">
-                  GHS {wallet.balanceGHS.toFixed(2)} / GHS 50.00 ({Math.min(100, Math.round((wallet.balanceGHS / 50) * 100))}%)
+                  ${wallet.balanceUSD.toFixed(2)} / ${MIN_CASHOUT_USD.toFixed(2)} USD ({Math.min(100, Math.round((wallet.balanceUSD / MIN_CASHOUT_USD) * 100))}%)
                 </span>
               </div>
               <div className={`w-full h-1.5 ${theme === 'light' ? 'bg-slate-200' : 'bg-neutral-900'} rounded-full overflow-hidden`}>
                 <div 
                   className="h-full bg-gradient-to-r from-amber-500 to-yellow-400 rounded-full"
-                  style={{ width: `${Math.min(100, Math.max(5, (wallet.balanceGHS / 50) * 100))}%` }}
+                  style={{ width: `${Math.min(100, Math.max(5, (wallet.balanceUSD / MIN_CASHOUT_USD) * 100))}%` }}
                 />
               </div>
             </div>
@@ -467,7 +470,7 @@ export const ValuWallet: React.FC = () => {
                   Cashout Requests
                 </h3>
                 <span className={`text-[10px] ${theme === 'light' ? 'text-slate-500' : 'text-neutral-400'}`}>
-                  24 hours processing time • Min GHS 50.00
+                  24 hours processing time • Min ${MIN_CASHOUT_USD.toFixed(2)} USD
                 </span>
               </div>
             </div>
@@ -527,7 +530,7 @@ export const ValuWallet: React.FC = () => {
                         )}
                       </div>
                       <div className={`text-xs font-black shrink-0 ${theme === 'light' ? 'text-slate-900' : 'text-white'}`}>
-                        GHS {Math.abs(req.amountGHS).toFixed(2)}
+                        ${Math.abs(req.amountGHS).toFixed(2)} USD
                       </div>
                     </div>
                   );
@@ -612,7 +615,7 @@ export const ValuWallet: React.FC = () => {
                           isPositive ? (theme === 'light' ? 'text-emerald-600' : 'text-emerald-400') : (theme === 'light' ? 'text-slate-800' : 'text-neutral-200')
                         }`}
                       >
-                        {isPositive ? `+GHS ${tx.amountGHS.toFixed(2)}` : `-GHS ${Math.abs(tx.amountGHS).toFixed(2)}`}
+                        {isPositive ? `+$${tx.amountGHS.toFixed(2)}` : `-$${Math.abs(tx.amountGHS).toFixed(2)}`}
                       </div>
                       {tx.status === 'pending' || tx.status === 'processing' ? (
                         <span className={`text-[9px] font-bold ${
@@ -668,11 +671,11 @@ export const ValuWallet: React.FC = () => {
             </div>
 
             <p className={`text-xs ${theme === 'light' ? 'text-slate-600' : 'text-neutral-300'} leading-relaxed`}>
-              Top up your wallet with Ghanaian Cedis (GHS) to tip creators, unlock masterclasses, and support community challenges.
+              Top up your ValuWallet in US Dollars ($) to tip creators across Africa, unlock masterclasses, and back community pools.
             </p>
 
             <div className="grid grid-cols-4 gap-2">
-              {[20, 50, 100, 250].map((amt) => (
+              {[1, 5, 10, 25].map((amt) => (
                 <button
                   key={amt}
                   type="button"
@@ -683,7 +686,7 @@ export const ValuWallet: React.FC = () => {
                       : (theme === 'light' ? 'bg-slate-50 text-slate-700 border border-slate-200 hover:bg-slate-100' : 'bg-neutral-950 text-neutral-300 border border-neutral-800 hover:border-neutral-700')
                   }`}
                 >
-                  GHS {amt}
+                  ${amt}
                 </button>
               ))}
             </div>
@@ -693,7 +696,7 @@ export const ValuWallet: React.FC = () => {
                 htmlFor="custom-topup-amount"
                 className={`text-[11px] font-bold ${theme === 'light' ? 'text-slate-700' : 'text-neutral-300'}`}
               >
-                Or enter custom amount (GHS)
+                Or enter custom amount (USD)
               </label>
               <div className={`flex items-center rounded-xl border px-3 py-2 transition-colors ${
                 theme === 'light'
@@ -701,7 +704,7 @@ export const ValuWallet: React.FC = () => {
                   : 'bg-neutral-950 border-neutral-800 focus-within:border-amber-500'
               }`}>
                 <span className={`text-xs font-black mr-2 select-none ${theme === 'light' ? 'text-slate-500' : 'text-neutral-400'}`}>
-                  GHS
+                  $
                 </span>
                 <input
                   id="custom-topup-amount"
@@ -711,7 +714,7 @@ export const ValuWallet: React.FC = () => {
                   step="any"
                   value={customTopUpInput}
                   onChange={(e) => handleCustomTopUpChange(e.target.value)}
-                  placeholder="Enter amount (min 1.00)"
+                  placeholder="Enter amount (min $1.00)"
                   className={`w-full bg-transparent text-sm font-bold outline-none ${
                     theme === 'light' ? 'text-slate-900 placeholder:text-slate-400' : 'text-white placeholder:text-neutral-600'
                   }`}
@@ -719,7 +722,7 @@ export const ValuWallet: React.FC = () => {
               </div>
               {effectiveTopUpAmount < 1 && (
                 <p className="text-[10px] font-semibold text-rose-500">
-                  Minimum top-up amount is GHS 1.00
+                  Minimum top-up amount is $1.00 USD
                 </p>
               )}
             </div>
@@ -729,11 +732,11 @@ export const ValuWallet: React.FC = () => {
             } p-3 rounded-2xl border flex items-center justify-between text-xs`}>
               <span>Supported Channels:</span>
               <span className={`font-bold flex items-center gap-1.5 ${theme === 'light' ? 'text-slate-900' : 'text-white'}`}>
-                <span>📱 MTN MoMo</span>
-                <span>•</span>
-                <span>Telecel</span>
+                <span>📱 MoMo</span>
                 <span>•</span>
                 <span>💳 Card</span>
+                <span>•</span>
+                <span>🏦 Bank</span>
               </span>
             </div>
 
@@ -751,7 +754,7 @@ export const ValuWallet: React.FC = () => {
                 {isProcessingPaystack
                   ? 'Opening Paystack...'
                   : effectiveTopUpAmount >= 1
-                    ? `Pay GHS ${effectiveTopUpAmount.toFixed(2)} with Paystack`
+                    ? `Add $${effectiveTopUpAmount.toFixed(2)} USD with Paystack`
                     : 'Enter Amount to Pay'}
               </span>
             </button>

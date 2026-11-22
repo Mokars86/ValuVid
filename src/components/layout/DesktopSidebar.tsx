@@ -41,7 +41,7 @@ export const DesktopSidebar: React.FC = () => {
     { id: 'feed', label: 'For You Feed', icon: Home },
     { id: 'discover', label: 'Discover & Pools', icon: Compass },
     { id: 'create', label: 'Creator Studio', icon: Plus },
-    { id: 'wallet', label: 'ValuWallet', icon: Wallet, badge: `GHS ${wallet.balanceGHS.toFixed(2)}` },
+    { id: 'wallet', label: 'ValuWallet', icon: Wallet, badge: `$${wallet.balanceUSD.toFixed(2)}` },
     { id: 'profile', label: 'My Profile', icon: User },
   ];
 

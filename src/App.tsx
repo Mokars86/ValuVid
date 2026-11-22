@@ -5,6 +5,7 @@ import { AppProvider, useApp } from './context/AppContext';
 import { DeviceShell } from './components/layout/DeviceShell';
 import { BottomNav } from './components/layout/BottomNav';
 import { FeedScreen } from './components/feed/FeedScreen';
+import { MiniPlayer } from './components/feed/MiniPlayer';
 import { DiscoverScreen } from './components/discover/DiscoverScreen';
 import { CreateStudio } from './components/create/CreateStudio';
 import { ValuWallet } from './components/wallet/ValuWallet';
@@ -447,6 +448,9 @@ const AppContent: React.FC = () => {
 
       {/* Bottom Navigation */}
       {!isCinemaMode && <BottomNav />}
+
+      {/* Floating Mini-Player when browsing other tabs */}
+      <MiniPlayer />
 
       {/* Overlays & Modals */}
       <QuickTipModal />
