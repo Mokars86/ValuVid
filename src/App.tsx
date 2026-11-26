@@ -39,6 +39,8 @@ const AppContent: React.FC = () => {
     activeTab, 
     setActiveTab,
     isCinemaMode,
+    isNativePip,
+    miniPlayerVideo,
     authModalOpen,
     setAuthModalOpen,
     showSettings,
@@ -438,7 +440,7 @@ const AppContent: React.FC = () => {
   return (
     <DeviceShell>
       {/* Screen Views */}
-      <div className="relative flex-1 w-full min-h-0 overflow-hidden flex flex-col">
+      <div className={`relative flex-1 w-full min-h-0 overflow-hidden flex flex-col ${isNativePip && activeTab !== 'feed' && miniPlayerVideo ? 'hidden' : ''}`}>
         {activeTab === 'feed' && <FeedScreen />}
         {activeTab === 'discover' && <DiscoverScreen />}
         {activeTab === 'create' && <CreateStudio />}
@@ -447,13 +449,15 @@ const AppContent: React.FC = () => {
       </div>
 
       {/* Bottom Navigation */}
-      {!isCinemaMode && <BottomNav />}
+      {!isCinemaMode && !isNativePip && <BottomNav />}
 
       {/* Floating Mini-Player when browsing other tabs */}
       <MiniPlayer />
 
       {/* Overlays & Modals */}
-      <QuickTipModal />
+      {!isNativePip && (
+        <>
+          <QuickTipModal />
       <CashoutDrawer />
       <ContentUnlockModal />
       <VideoAnalyticsModal />
@@ -484,6 +488,8 @@ const AppContent: React.FC = () => {
         isOpen={isProductCheckoutOpen}
         onClose={closeProductCheckout}
       />
+        </>
+      )}
 
       {/* Launch Splash Screen */}
       <SplashScreen />

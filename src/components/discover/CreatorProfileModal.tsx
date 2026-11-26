@@ -48,7 +48,7 @@ export const CreatorProfileModal: React.FC<CreatorProfileModalProps> = ({
   onClose,
   onSelectVideo,
 }) => {
-  const { videos, currentUser, isFollowingCreator, toggleFollowCreator, theme, setShareToast } = useApp();
+  const { videos, currentUser, isLoggedIn, authUser, isFollowingCreator, toggleFollowCreator, theme, setShareToast } = useApp();
   const [showShareModal, setShowShareModal] = useState(false);
   const [followersListOpen, setFollowersListOpen] = useState(false);
   const [followersListTab, setFollowersListTab] = useState<'followers' | 'following'>('followers');
@@ -181,6 +181,10 @@ export const CreatorProfileModal: React.FC<CreatorProfileModalProps> = ({
   const isVerified = Boolean(liveProfile?.verified ?? creator.verified);
 
   const handleFollowClick = () => {
+    if (!isLoggedIn && !authUser) {
+      toggleFollowCreator(creator.username || creator.id);
+      return;
+    }
     sounds.playLikePop();
     const delta = isCurrentlyFollowing ? -1 : 1;
     setLiveProfile((prev) =>
@@ -188,7 +192,7 @@ export const CreatorProfileModal: React.FC<CreatorProfileModalProps> = ({
         ? { ...prev, followers: Math.max(0, prev.followers + delta) }
         : prev
     );
-    toggleFollowCreator(creator.id || creator.username);
+    toggleFollowCreator(creator.username || creator.id);
   };
 
   return (

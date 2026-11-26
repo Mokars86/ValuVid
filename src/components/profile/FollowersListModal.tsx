@@ -95,12 +95,14 @@ export const FollowersListModal: React.FC<FollowersListModalProps> = ({
   const followingList: Creator[] = useMemo(() => {
     if (remoteFollowing.length > 0) {
       return remoteFollowing
-        .filter((u) => !isMockAccount(u.username) && (u.name || '').trim().toLowerCase() !== 'valuvid creator')
+        .filter((u) => !isMockAccount(u.username))
         .map(u => ({
           ...u,
           isFollowing: myFollowedSet.has(u.username.toLowerCase()) || isViewingSelf,
         }));
     }
+
+    if (!isViewingSelf) return [];
 
     const list: Creator[] = [];
     const seen = new Set<string>();
@@ -133,7 +135,7 @@ export const FollowersListModal: React.FC<FollowersListModalProps> = ({
   // Compute followers list (people who follow target user, strictly real users)
   const followersList: Creator[] = useMemo(() => {
     return remoteFollowers
-      .filter((u) => !isMockAccount(u.username) && (u.name || '').trim().toLowerCase() !== 'valuvid creator')
+      .filter((u) => !isMockAccount(u.username))
       .map(u => ({
         ...u,
         isFollowing: myFollowedSet.has(u.username.toLowerCase()),
@@ -155,7 +157,7 @@ export const FollowersListModal: React.FC<FollowersListModalProps> = ({
   if (!isOpen) return null;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center p-0 sm:p-4 bg-black/75 backdrop-blur-sm animate-in fade-in duration-200">
+    <div className="fixed inset-0 z-[110] flex items-end sm:items-center justify-center p-0 sm:p-4 bg-black/75 backdrop-blur-sm animate-in fade-in duration-200">
       <div 
         className={`w-full sm:max-w-md max-h-[85vh] sm:max-h-[80vh] flex flex-col rounded-t-3xl sm:rounded-3xl border shadow-2xl overflow-hidden transition-all ${
           theme === 'light'

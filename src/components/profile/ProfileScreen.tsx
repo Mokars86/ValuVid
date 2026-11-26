@@ -1024,7 +1024,7 @@ export const ProfileScreen: React.FC = () => {
             } border px-4 py-1.5 rounded-full`}>
               <Coins className="w-3.5 h-3.5 text-amber-500" />
               <span className={`text-xs font-bold ${theme === 'light' ? 'text-amber-800' : 'text-amber-300'}`}>
-                GHS {totalMyTips.toFixed(2)} Community Tips Received
+                ${totalMyTips.toFixed(2)} Community Tips Received
               </span>
             </div>
           </div>
@@ -1047,7 +1047,7 @@ export const ProfileScreen: React.FC = () => {
             <div className={`${theme === 'light' ? 'bg-slate-50 border-slate-200' : 'bg-neutral-950/60 border-neutral-800/80'} p-3 rounded-2xl border`}>
               <span className={`text-[10px] block mb-0.5 ${theme === 'light' ? 'text-slate-500' : 'text-neutral-400'}`}>Est. Creator Yield</span>
               <div className="text-base font-bold text-emerald-500">
-                GHS {estimatedCreatorYield.toFixed(2)}
+                ${estimatedCreatorYield.toFixed(2)}
               </div>
               <span className={`text-[9px] flex items-center gap-1 mt-0.5 ${theme === 'light' ? 'text-slate-500' : 'text-neutral-500'}`}>
                 <span className="text-emerald-500 font-bold">{myVideos.length}</span> uploads • Escrow & Tips
@@ -1069,10 +1069,10 @@ export const ProfileScreen: React.FC = () => {
             <div className={`${theme === 'light' ? 'bg-slate-50 border-slate-200' : 'bg-neutral-950/60 border-neutral-800/80'} p-3 rounded-2xl border`}>
               <span className={`text-[10px] block mb-0.5 ${theme === 'light' ? 'text-slate-500' : 'text-neutral-400'}`}>Community Tips</span>
               <div className={`text-base font-bold ${theme === 'light' ? 'text-amber-600' : 'text-amber-400'}`}>
-                GHS {realTipsEarned.toFixed(2)}
+                ${realTipsEarned.toFixed(2)}
               </div>
               <span className={`text-[9px] flex items-center gap-1 mt-0.5 ${theme === 'light' ? 'text-slate-500' : 'text-neutral-500'}`}>
-                <span className="text-amber-500 font-bold">{totalMyTips > 0 ? 'MoMo Tips' : 'Direct Support'}</span>
+                <span className="text-amber-500 font-bold">{totalMyTips > 0 ? 'Creator Tips' : 'Direct Support'}</span>
               </span>
             </div>
 

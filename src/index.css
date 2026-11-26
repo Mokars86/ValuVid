@@ -104,18 +104,51 @@
 /* TikTok Sidebar Heart Button Micro-Bounce */
 @keyframes springPop {
   0% {
-    transform: scale(0.8);
+    transform: scale(0.65);
   }
-  50% {
-    transform: scale(1.35);
+  45% {
+    transform: scale(1.38);
+  }
+  70% {
+    transform: scale(0.95);
   }
   100% {
-    transform: scale(1.1);
+    transform: scale(1.08);
   }
 }
 
 .animate-spring-pop {
-  animation: springPop 0.35s cubic-bezier(0.175, 0.885, 0.32, 1.275) forwards;
+  animation: springPop 0.42s cubic-bezier(0.175, 0.885, 0.32, 1.275) forwards;
+}
+
+@keyframes likeRingRipple {
+  0% {
+    opacity: 0.9;
+    transform: scale(0.45);
+  }
+  100% {
+    opacity: 0;
+    transform: scale(1.95);
+  }
+}
+
+.animate-like-ring {
+  animation: likeRingRipple 0.55s cubic-bezier(0.22, 1, 0.36, 1) forwards;
+}
+
+@keyframes likeSparkleOut {
+  0% {
+    opacity: 1;
+    transform: rotate(var(--sparkle-angle, 0deg)) translateY(0) scale(1);
+  }
+  100% {
+    opacity: 0;
+    transform: rotate(var(--sparkle-angle, 0deg)) translateY(-22px) scale(0.2);
+  }
+}
+
+.animate-like-sparkle {
+  animation: likeSparkleOut 0.55s cubic-bezier(0.22, 1, 0.36, 1) forwards;
 }
 
 @keyframes pulseGlow {
@@ -204,4 +237,37 @@
 
 .animate-music-note-2 {
   animation: musicNoteFloat 2.6s ease-in-out infinite 1.3s;
+}
+
+/* YouTube-style Like button topic icon subtle bounce & pop (~0.8s) */
+@keyframes topicBouncePop {
+  0% {
+    opacity: 0;
+    transform: scale(0.4) rotate(-14deg);
+  }
+  28% {
+    opacity: 1;
+    transform: scale(1.38) rotate(8deg);
+  }
+  52% {
+    opacity: 1;
+    transform: scale(0.95) rotate(-4deg);
+  }
+  72% {
+    opacity: 1;
+    transform: scale(1.12) rotate(0deg);
+  }
+  90% {
+    opacity: 1;
+    transform: scale(1.0) rotate(0deg);
+  }
+  100% {
+    opacity: 0;
+    transform: scale(0.65) rotate(0deg);
+  }
+}
+
+.animate-topic-pop {
+  animation: topicBouncePop 0.8s cubic-bezier(0.22, 1, 0.36, 1) forwards;
+  will-change: transform, opacity;
 }

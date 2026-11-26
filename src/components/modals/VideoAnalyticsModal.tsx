@@ -73,9 +73,9 @@ export const VideoAnalyticsModal: React.FC = () => {
             Total Monetized Revenue
           </span>
           <div className="text-2xl font-black text-white">
-            GHS {grandTotal.toFixed(2)}{' '}
+            ${grandTotal.toFixed(2)}{' '}
             <span className="text-xs font-normal text-neutral-400">
-              (≈ ${(grandTotal * 0.083).toFixed(2)} USD)
+              USD
             </span>
           </div>
 
@@ -84,19 +84,19 @@ export const VideoAnalyticsModal: React.FC = () => {
             <div>
               <div className="text-[10px] text-neutral-400">Direct Tips</div>
               <div className="text-xs font-bold text-amber-400 mt-0.5">
-                GHS {totalTips.toFixed(1)}
+                ${totalTips.toFixed(2)}
               </div>
             </div>
             <div>
               <div className="text-[10px] text-neutral-400">Watch Pool</div>
               <div className="text-xs font-bold text-emerald-400 mt-0.5">
-                GHS {watchRewardsEst.toFixed(1)}
+                ${watchRewardsEst.toFixed(2)}
               </div>
             </div>
             <div>
               <div className="text-[10px] text-neutral-400">Unlocks</div>
               <div className="text-xs font-bold text-cyan-400 mt-0.5">
-                GHS {unlockRevenue.toFixed(1)}
+                ${unlockRevenue.toFixed(2)}
               </div>
             </div>
           </div>

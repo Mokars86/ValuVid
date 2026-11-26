@@ -66,7 +66,6 @@ export function isTestUserOrMockVideo(v: any): boolean {
     isMockAccount(username) ||
     creatorName === 'valuvid creator' ||
     creatorName.startsWith('test') ||
-    title.includes('valuvid studio creation') ||
     title.includes('test follow') ||
     caption.includes('test follow') ||
     id.startsWith('test') ||

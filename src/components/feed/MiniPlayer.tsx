@@ -12,11 +12,13 @@ export const MiniPlayer: React.FC = () => {
     setIsFeedMuted,
     reportActivePlayback,
     activeTab,
+    isNativePip,
   } = useApp();
 
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const [src, setSrc] = useState<string>('');
   const [isPlaying, setIsPlaying] = useState(true);
+  const [isLandscape, setIsLandscape] = useState(false);
   const seekAppliedRef = useRef(false);
 
   useEffect(() => {
@@ -68,6 +70,23 @@ export const MiniPlayer: React.FC = () => {
     return () => document.removeEventListener('visibilitychange', handleVisibility);
   }, [miniPlayerVideo]);
 
+  useEffect(() => {
+    const handleNativeStop = () => {
+      if (videoRef.current && !videoRef.current.paused) {
+        videoRef.current.pause();
+        setIsPlaying(false);
+      }
+    };
+    window.addEventListener('valuvid-native-stop', handleNativeStop);
+    return () => window.removeEventListener('valuvid-native-stop', handleNativeStop);
+  }, []);
+
+  useEffect(() => {
+    if (miniPlayerVideo?.video && activeTab === 'create') {
+      reportActivePlayback(miniPlayerVideo.video, videoRef.current?.currentTime || 0, false);
+    }
+  }, [activeTab, miniPlayerVideo, reportActivePlayback]);
+
   if (!miniPlayerVideo || activeTab === 'feed' || activeTab === 'create' || !src) {
     return null;
   }
@@ -97,10 +116,14 @@ export const MiniPlayer: React.FC = () => {
 
   return (
     <div
-      onClick={expandMiniPlayer}
+      onClick={isNativePip ? undefined : expandMiniPlayer}
       role="region"
       aria-label="Floating mini video player"
-      className="fixed bottom-20 right-3 lg:bottom-6 lg:right-6 z-40 w-32 sm:w-40 aspect-[9/14] rounded-2xl overflow-hidden bg-black border border-white/20 shadow-2xl shadow-black/70 cursor-pointer group select-none animate-fade-in"
+      className={
+        isNativePip
+          ? 'fixed inset-0 z-[9999] w-screen h-screen bg-black overflow-hidden select-none flex items-center justify-center'
+          : 'fixed bottom-20 right-3 lg:bottom-6 lg:right-6 z-40 w-32 sm:w-40 aspect-[9/14] rounded-2xl overflow-hidden bg-black border border-white/20 shadow-2xl shadow-black/70 cursor-pointer group select-none animate-fade-in'
+      }
     >
       <video
         ref={videoRef}
@@ -112,9 +135,16 @@ export const MiniPlayer: React.FC = () => {
         muted={isFeedMuted}
         onLoadedMetadata={() => {
           const vid = videoRef.current;
-          if (vid && !seekAppliedRef.current && currentTime > 0 && vid.duration > currentTime) {
-            seekAppliedRef.current = true;
-            vid.currentTime = currentTime;
+          if (vid) {
+            if (vid.videoWidth && vid.videoHeight && vid.videoWidth > vid.videoHeight * 1.05) {
+              setIsLandscape(true);
+            } else {
+              setIsLandscape(false);
+            }
+            if (!seekAppliedRef.current && currentTime > 0 && vid.duration > currentTime) {
+              seekAppliedRef.current = true;
+              vid.currentTime = currentTime;
+            }
           }
         }}
         onPlaying={() => {
@@ -125,10 +155,11 @@ export const MiniPlayer: React.FC = () => {
           setIsPlaying(false);
           reportActivePlayback(video, videoRef.current?.currentTime || 0, false);
         }}
-        className="w-full h-full object-cover"
+        className={`w-full h-full ${isLandscape ? 'object-contain' : 'object-cover'}`}
       />
 
       {/* Top Gradient & Controls */}
+      {!isNativePip && (
       <div className="absolute inset-x-0 top-0 p-1.5 bg-gradient-to-b from-black/75 to-transparent flex items-center justify-between">
         <button
           type="button"
@@ -155,8 +186,10 @@ export const MiniPlayer: React.FC = () => {
           <X className="w-3.5 h-3.5" />
         </button>
       </div>
+      )}
 
       {/* Bottom Gradient & Playback Controls */}
+      {!isNativePip && (
       <div className="absolute inset-x-0 bottom-0 p-1.5 bg-gradient-to-t from-black/85 via-black/40 to-transparent flex flex-col gap-1">
         <span className="text-[9px] font-bold text-white/90 truncate px-0.5">
           @{video.creator?.username || 'creator'}
@@ -182,6 +215,7 @@ export const MiniPlayer: React.FC = () => {
           </button>
         </div>
       </div>
+      )}
     </div>
   );
 };

@@ -50,7 +50,7 @@ import {
   recordNewRegistration, 
   validatePayoutChannelExclusivity 
 } from '../utils/deviceFingerprint';
-import { recordKnownUser, isTestUserOrMockVideo, isMockAccount } from '../utils/userDirectory';
+import { recordKnownUser, isTestUserOrMockVideo, isMockAccount, getAllKnownUsers } from '../utils/userDirectory';
 import { INITIAL_COMMUNITY_VIDEOS, getInitialFeedVideos } from '../data/communityVideos';
 import {
   SupportedCurrency,
@@ -76,6 +76,7 @@ interface AppContextType {
   requestedVideoId: string | null;
   clearRequestedVideoId: () => void;
   miniPlayerVideo: { video: VideoItem; currentTime: number } | null;
+  isNativePip: boolean;
   reportActivePlayback: (video: VideoItem, currentTime: number, isPlaying: boolean) => void;
   closeMiniPlayer: () => void;
   expandMiniPlayer: () => void;
@@ -260,7 +261,7 @@ interface AppContextType {
   deletePayoutMethod: (methodId: string) => void;
   setDefaultPayoutMethod: (methodId: string) => void;
   addComment: (videoId: string, text: string, tipAmount?: number) => void;
-  publishNewVideo: (video: Partial<VideoItem> & { fileBlob?: Blob | File }) => Promise<void>;
+  publishNewVideo: (video: Partial<VideoItem> & { fileBlob?: Blob | File }) => Promise<{ success: boolean; error?: string }>;
   updateVideo: (videoId: string, updates: Partial<VideoItem>) => Promise<boolean>;
   deleteVideo: (videoId: string) => Promise<boolean>;
   pinnedVideoIds: string[];
@@ -386,7 +387,22 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const [requestedVideoId, setRequestedVideoId] = useState<string | null>(null);
   const clearRequestedVideoId = useCallback(() => setRequestedVideoId(null), []);
   const [miniPlayerVideo, setMiniPlayerVideo] = useState<{ video: VideoItem; currentTime: number } | null>(null);
+  const [isNativePip, setIsNativePip] = useState<boolean>(() => {
+    if (typeof window !== 'undefined') {
+      return Boolean((window as any).__VALUVID_IN_PIP__);
+    }
+    return false;
+  });
   const activePlaybackRef = React.useRef<{ video: VideoItem; currentTime: number; isPlaying: boolean } | null>(null);
+
+  useEffect(() => {
+    const handlePipChange = (event: Event) => {
+      const customEvent = event as CustomEvent<{ isInPip?: boolean }>;
+      setIsNativePip(Boolean(customEvent?.detail?.isInPip));
+    };
+    window.addEventListener('valuvid-pip-change', handlePipChange);
+    return () => window.removeEventListener('valuvid-pip-change', handlePipChange);
+  }, []);
 
   const reportActivePlayback = useCallback((video: VideoItem, currentTime: number, isPlaying: boolean) => {
     activePlaybackRef.current = { video, currentTime, isPlaying };
@@ -2148,6 +2164,12 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   const toggleFollowCreator = useCallback((creatorIdOrUsername: string) => {
     if (!creatorIdOrUsername) return;
+    if (!isLoggedIn && !authUser) {
+      setAuthMode('signup');
+      setAuthModalOpen(true);
+      setShareToast('Please sign in or register to follow creators!');
+      return;
+    }
     sounds.playLikePop();
 
     // 1. Resolve canonical creator info from current videos or known users
@@ -2157,9 +2179,19 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         (v.creator?.username && v.creator.username.toLowerCase().replace(/^@/, '') === cleanKey) ||
         (v.creator?.id && v.creator.id.toLowerCase() === cleanKey)
     );
+    const matchedKnown = !matchedVideo
+      ? getAllKnownUsers().find(
+          (u) =>
+            (u.username && u.username.toLowerCase().replace(/^@/, '') === cleanKey) ||
+            (u.id && u.id.toLowerCase() === cleanKey)
+        )
+      : undefined;
 
-    const targetUsername = matchedVideo?.creator?.username?.toLowerCase().replace(/^@/, '') || cleanKey;
-    const targetId = (matchedVideo?.creator?.id || creatorIdOrUsername).toLowerCase();
+    const targetUsername =
+      matchedVideo?.creator?.username?.toLowerCase().replace(/^@/, '') ||
+      matchedKnown?.username?.toLowerCase().replace(/^@/, '') ||
+      cleanKey;
+    const targetId = (matchedVideo?.creator?.id || matchedKnown?.id || creatorIdOrUsername).toLowerCase();
 
     // Prevent user from following themselves
     const myUsername = (currentUser?.username || '').toLowerCase().replace(/^@/, '');
@@ -2170,6 +2202,11 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     );
     if (isSelf) {
       setShareToast("You cannot follow your own account 😄");
+      return;
+    }
+
+    const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+    if (!targetUsername || uuidRegex.test(targetUsername)) {
       return;
     }
 
@@ -2201,12 +2238,12 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       nextFollowed.push(targetUsername);
     }
 
-    // Deduplicate to canonical usernames
+    // Deduplicate to canonical usernames (and strip any stale UUIDs)
     nextFollowed = Array.from(
       new Set(
         nextFollowed
           .map((x) => x.toLowerCase().trim().replace(/^@/, ''))
-          .filter((x) => x && x !== myUsername && x !== myId)
+          .filter((x) => x && x !== myUsername && x !== myId && !uuidRegex.test(x))
       )
     );
 
@@ -2282,7 +2319,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         })
       );
     });
-  }, [videos, currentUser]);
+  }, [videos, currentUser, isLoggedIn, authUser]);
 
   const sendTip = useCallback((videoId: string, amountUSD: number, message?: string): boolean => {
     if (wallet.balanceUSD < amountUSD) {
@@ -2744,11 +2781,12 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     );
   }, [currentUser]);
 
-  const publishNewVideo = useCallback(async (newVideoData: Partial<VideoItem> & { fileBlob?: Blob | File }) => {
-    sounds.playSuccessPayout();
+  const publishNewVideo = useCallback(async (
+    newVideoData: Partial<VideoItem> & { fileBlob?: Blob | File }
+  ): Promise<{ success: boolean; error?: string }> => {
     const videoId = `vid-user-${Date.now()}`;
 
-    // If fileBlob is provided, persist it in IndexedDB for immediate & future playback
+    // If fileBlob is provided, persist it in IndexedDB for immediate local playback
     if (newVideoData.fileBlob) {
       await saveMediaBlob(videoId, newVideoData.fileBlob);
       await saveMediaBlob('latest_upload', newVideoData.fileBlob);
@@ -2773,6 +2811,16 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       } catch (err) {
         console.warn('[AppContext] Cloud upload retry failed:', err);
       }
+    }
+
+    const cleanRemoteVideoUrl = (persistentVideoUrl && !persistentVideoUrl.startsWith('blob:'))
+      ? persistentVideoUrl
+      : '';
+
+    if (!cleanRemoteVideoUrl) {
+      const errMsg = 'Could not upload video to cloud storage. Please check your internet connection and tap Publish again.';
+      setShareToast(`⚠️ ${errMsg}`);
+      return { success: false, error: errMsg };
     }
 
     let finalThumb = newVideoData.thumbnailUrl || '';
@@ -2821,41 +2869,47 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       monetizationCeiling: newVideoData.aiDisclosureType === 'generated' ? 'reduced_ai' : 'full_human',
     };
 
+    const dbVideoPayload: VideoItem = {
+      ...createdVideo,
+      videoUrl: cleanRemoteVideoUrl,
+      thumbnailUrl: (createdVideo.thumbnailUrl || '').startsWith('blob:') ? '' : createdVideo.thumbnailUrl,
+    };
+
+    // Persist to Supabase Cloud Database FIRST so all users can access it
+    let saveRes = await saveVideoToSupabase(dbVideoPayload);
+    if (!saveRes.success) {
+      console.warn('[AppContext] Initial saveVideoToSupabase failed, retrying once...', saveRes.error);
+      saveRes = await saveVideoToSupabase(dbVideoPayload);
+    }
+    if (!saveRes.success) {
+      const errMsg = 'Could not save video to cloud database. Please check your connection and tap Publish again.';
+      setShareToast(`⚠️ ${errMsg}`);
+      return { success: false, error: errMsg };
+    }
+
+    sounds.playSuccessPayout();
+
     // Cache locally in localStorage so user-created uploads persist reliably
     try {
       const localVideos: VideoItem[] = JSON.parse(localStorage.getItem('valuvid_user_videos') || '[]');
       const filtered = localVideos.filter((v) => v.id !== videoId);
-      // Preserve cloud URL (https://...) and short URLs; only strip raw base64 data URLs > 500k to prevent quota error
       const safeVideo = {
-        ...createdVideo,
-        videoUrl: (persistentVideoUrl && persistentVideoUrl.startsWith('data:') && persistentVideoUrl.length > 500000)
+        ...dbVideoPayload,
+        thumbnailUrl: (dbVideoPayload.thumbnailUrl && dbVideoPayload.thumbnailUrl.startsWith('data:') && dbVideoPayload.thumbnailUrl.length > 500000)
           ? ''
-          : (persistentVideoUrl || newVideoData.videoUrl || ''),
-        thumbnailUrl: (createdVideo.thumbnailUrl && createdVideo.thumbnailUrl.startsWith('data:') && createdVideo.thumbnailUrl.length > 500000)
-          ? ''
-          : createdVideo.thumbnailUrl,
+          : dbVideoPayload.thumbnailUrl,
       };
       localStorage.setItem('valuvid_user_videos', JSON.stringify([safeVideo, ...filtered]));
     } catch (e) {
       console.warn('LocalStorage save error:', e);
     }
 
-    setVideos((prev) => [createdVideo, ...prev.filter((v) => v.id !== videoId)]);
+    setVideos((prev) => [dbVideoPayload, ...prev.filter((v) => v.id !== videoId)]);
     setFeedFilter('foryou');
     setCurrentVideoIndex(0);
     setActiveTab('feed');
-
-    // Persist to Supabase Database (never send ephemeral blob: URLs to DB)
-    const dbVideoPayload: VideoItem = {
-      ...createdVideo,
-      videoUrl: createdVideo.videoUrl.startsWith('blob:') ? '' : createdVideo.videoUrl,
-      thumbnailUrl: (createdVideo.thumbnailUrl || '').startsWith('blob:') ? '' : createdVideo.thumbnailUrl,
-    };
-    const saveRes = await saveVideoToSupabase(dbVideoPayload);
-    if (!saveRes.success) {
-      console.warn('[AppContext] Initial saveVideoToSupabase failed, retrying once...', saveRes.error);
-      await saveVideoToSupabase(dbVideoPayload);
-    }
+    setShareToast('Video published to ValuVid Cloud! 🌍');
+    return { success: true };
   }, [currentUser, authUser]);
 
   const updateVideo = useCallback(async (videoId: string, updates: Partial<VideoItem>): Promise<boolean> => {
@@ -3441,6 +3495,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         requestedVideoId,
         clearRequestedVideoId,
         miniPlayerVideo,
+        isNativePip,
         reportActivePlayback,
         closeMiniPlayer,
         expandMiniPlayer,

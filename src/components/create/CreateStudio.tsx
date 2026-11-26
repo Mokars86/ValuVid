@@ -95,6 +95,7 @@ export const CreateStudio: React.FC = () => {
   const pendingSubstandardFileRef = useRef<File | null>(null);
   const [selectedFileObj, setSelectedFileObj] = useState<File | null>(null);
   const [uploadedMediaUrl, setUploadedMediaUrl] = useState<string | null>(null);
+  const [isPublishing, setIsPublishing] = useState(false);
   const [uploadedMediaType, setUploadedMediaType] = useState<'video'>('video');
   const [uploadedFileName, setUploadedFileName] = useState<string | null>(null);
   const [isCloudUploading, setIsCloudUploading] = useState(false);
@@ -396,7 +397,7 @@ export const CreateStudio: React.FC = () => {
   };
 
   // Helper to extract a representative frame from the actively rendering preview video
-  const captureFromPreviewVideo = useCallback((): string | null => {
+  const captureFromPreviewVideo = useCallback((overwrite = false): string | null => {
     try {
       const v = previewVideoRef.current;
       if (v && v.videoWidth > 0 && v.videoHeight > 0) {
@@ -415,7 +416,7 @@ export const CreateStudio: React.FC = () => {
           ctx.drawImage(v, 0, 0, targetW, targetH);
           const dataUrl = canvas.toDataURL('image/jpeg', 0.8);
           if (dataUrl && dataUrl.length > 200) {
-            setAutoCoverUrl((prev) => prev || dataUrl);
+            setAutoCoverUrl((prev) => (overwrite ? dataUrl : prev || dataUrl));
             return dataUrl;
           }
         }
@@ -541,7 +542,81 @@ export const CreateStudio: React.FC = () => {
     }
   }, []);
 
+  const captureFrameAtTime = useCallback((time: number) => {
+    const source = selectedFileObj || uploadedMediaUrl;
+    if (!source) return;
+    try {
+      const tempVid = document.createElement('video');
+      tempVid.crossOrigin = 'anonymous';
+      tempVid.muted = true;
+      tempVid.playsInline = true;
+      tempVid.preload = 'auto';
+      const isBlob = typeof source !== 'string';
+      const srcUrl = isBlob ? URL.createObjectURL(source) : source;
+      tempVid.src = srcUrl;
+
+      const cleanup = () => {
+        if (isBlob) {
+          try { URL.revokeObjectURL(srcUrl); } catch {}
+        }
+      };
+
+      tempVid.onloadedmetadata = () => {
+        const safeTime = Math.min(Math.max(0.05, time), Math.max(0.1, (tempVid.duration || 15) - 0.05));
+        tempVid.currentTime = safeTime;
+      };
+      tempVid.onseeked = () => {
+        try {
+          const canvas = document.createElement('canvas');
+          const maxW = 480;
+          const maxH = 854;
+          let targetW = tempVid.videoWidth || 360;
+          let targetH = tempVid.videoHeight || 640;
+          const ratio = Math.min(maxW / targetW, maxH / targetH);
+          targetW = Math.round(targetW * ratio);
+          targetH = Math.round(targetH * ratio);
+          canvas.width = targetW;
+          canvas.height = targetH;
+          const ctx = canvas.getContext('2d');
+          if (ctx) {
+            ctx.drawImage(tempVid, 0, 0, targetW, targetH);
+            const dataUrl = canvas.toDataURL('image/jpeg', 0.82);
+            if (dataUrl && dataUrl.length > 200) {
+              setAutoCoverUrl(dataUrl);
+            }
+          }
+        } catch (err) {
+          console.warn('[CreateStudio] Error capturing timeline frame:', err);
+        } finally {
+          cleanup();
+        }
+      };
+      tempVid.onerror = () => cleanup();
+    } catch {}
+  }, [selectedFileObj, uploadedMediaUrl]);
+
   const handleSeekCoverTime = useCallback((time: number) => {
+    setSelectedCoverTimeSec(time);
+    if (customCoverUrl) {
+      setCustomCoverUrl(null);
+    }
+    if (filmstripFrames.length > 0 && videoDurationSec > 0) {
+      const idx = Math.min(
+        filmstripFrames.length - 1,
+        Math.max(0, Math.floor((time / videoDurationSec) * filmstripFrames.length))
+      );
+      if (filmstripFrames[idx]) {
+        setAutoCoverUrl(filmstripFrames[idx]);
+      }
+    }
+    const v = previewVideoRef.current;
+    if (v) {
+      v.currentTime = time;
+      v.pause();
+    }
+  }, [customCoverUrl, filmstripFrames, videoDurationSec]);
+
+  const handleSeekCoverComplete = useCallback((time: number) => {
     setSelectedCoverTimeSec(time);
     if (customCoverUrl) {
       setCustomCoverUrl(null);
@@ -550,42 +625,9 @@ export const CreateStudio: React.FC = () => {
     if (v) {
       v.currentTime = time;
       v.pause();
-      try {
-        const canvas = document.createElement('canvas');
-        const maxW = 480;
-        const maxH = 854;
-        let targetW = v.videoWidth || 360;
-        let targetH = v.videoHeight || 640;
-        const ratio = Math.min(maxW / targetW, maxH / targetH);
-        targetW = Math.round(targetW * ratio);
-        targetH = Math.round(targetH * ratio);
-        canvas.width = targetW;
-        canvas.height = targetH;
-        const ctx = canvas.getContext('2d');
-        if (ctx) {
-          ctx.drawImage(v, 0, 0, targetW, targetH);
-          const dataUrl = canvas.toDataURL('image/jpeg', 0.8);
-          if (dataUrl && dataUrl.length > 100) {
-            setAutoCoverUrl(dataUrl);
-          }
-        }
-      } catch (err) {
-        console.warn('Error capturing scrubbed frame:', err);
-      }
     }
-  }, [customCoverUrl]);
-
-  const handleSeekCoverComplete = useCallback((time: number) => {
-    setSelectedCoverTimeSec(time);
-    const v = previewVideoRef.current;
-    if (v) {
-      v.currentTime = time;
-      v.pause();
-      setTimeout(() => {
-        captureFromPreviewVideo();
-      }, 100);
-    }
-  }, [captureFromPreviewVideo]);
+    captureFrameAtTime(time);
+  }, [customCoverUrl, captureFrameAtTime]);
 
   // Helper to extract a representative frame from a video file as default cover/thumbnail
   const extractThumbnailFromVideo = (videoSource: string | File | Blob): Promise<string> => {
@@ -999,10 +1041,20 @@ export const CreateStudio: React.FC = () => {
       return;
     }
 
+    if (isPublishing) return;
+
+    if (!selectedFileObj && !(uploadedMediaUrl && uploadedMediaUrl.startsWith('http'))) {
+      alert('Please record or select a video before publishing!');
+      setStep('record');
+      return;
+    }
+
     if (isCloudUploading || (selectedFileObj && !uploadComplete && uploadProgress < 100)) {
       alert('Your video is still uploading to ValuVid Cloud Storage. Please wait for the upload circle to reach 100% before publishing!');
       return;
     }
+
+    setIsPublishing(true);
 
     const tools: string[] = [];
     if (aiVoiceCloned) tools.push('Cloned Voice');
@@ -1062,54 +1114,62 @@ export const CreateStudio: React.FC = () => {
       }
     }
 
-    await publishNewVideo({
-      videoUrl: uploadedMediaUrl || '',
-      thumbnailUrl: cloudThumbnailUrl || finalThumbnail,
-      fileBlob: selectedFileObj || undefined,
-      title: title || 'ValuVid Studio Creation',
-      caption: caption || 'Check out my new vertical creation on ValuVid! 🇬🇭✨',
-      hashtags: finalHashtags,
-      category: autoCategory,
-      isPayPerUnlock,
-      unlockPriceGHS: isPayPerUnlock ? unlockPriceGHS : undefined,
-      audioTrack: {
-        title: selectedStudioSound?.title || 'Original Sound',
-        artist: selectedStudioSound?.artist || currentUser.name,
-      },
-      musicVolume: 0,
-      isAiContent: isAiAssistedOrGenerated,
-      aiDisclosureType: isAiAssistedOrGenerated ? aiDisclosureType : 'none',
-      aiToolsUsed: isAiAssistedOrGenerated ? tools : [],
-      aiDetails: isAiAssistedOrGenerated
-        ? (aiDisclosureType === 'generated' 
-            ? 'Declared by creator as Generative AI. Pure synthetic content.' 
-            : 'Human performance enhanced with AI editing tools.')
-        : undefined,
-      valuSplit: enableValuSplit ? {
-        collaborator: {
-          id: 'cr-collab-user',
-          name: collabUsername.replace('_', ' ').toUpperCase(),
-          username: collabUsername.replace('@', ''),
-          avatar: 'https://images.unsplash.com/photo-1506794778202-cad84cf45f1d?w=200&auto=format&fit=crop&q=80',
-          role: collabRole
+    try {
+      const pubRes = await publishNewVideo({
+        videoUrl: uploadedMediaUrl || '',
+        thumbnailUrl: cloudThumbnailUrl || finalThumbnail,
+        fileBlob: selectedFileObj || undefined,
+        title: title || 'ValuVid Studio Creation',
+        caption: caption || 'Check out my new vertical creation on ValuVid! 🇬🇭✨',
+        hashtags: finalHashtags,
+        category: autoCategory,
+        isPayPerUnlock,
+        unlockPriceGHS: isPayPerUnlock ? unlockPriceGHS : undefined,
+        audioTrack: {
+          title: selectedStudioSound?.title || 'Original Sound',
+          artist: selectedStudioSound?.artist || currentUser.name,
         },
-        primaryCreatorSharePercent: 100 - collabShare,
-        collaboratorSharePercent: collabShare,
-        totalSplitEarnedGHS: 0
-      } : undefined,
-      communityGoal: enableCommunityGoal ? {
-        id: `goal-${Date.now()}`,
-        title: goalTitle,
-        targetGHS: goalTargetGHS,
-        currentGHS: 0,
-        rewardDescription: goalReward,
-        isCompleted: false,
-        contributorsCount: 0,
-        recentContributors: []
-      } : undefined,
-      videoResolution: videoResolution || { width: 720, height: 1280, qualityLabel: '720p HD' },
-      productTag: products.find((p) => p.id === selectedProductId) || undefined,
-    });
+        musicVolume: 0,
+        isAiContent: isAiAssistedOrGenerated,
+        aiDisclosureType: isAiAssistedOrGenerated ? aiDisclosureType : 'none',
+        aiToolsUsed: isAiAssistedOrGenerated ? tools : [],
+        aiDetails: isAiAssistedOrGenerated
+          ? (aiDisclosureType === 'generated' 
+              ? 'Declared by creator as Generative AI. Pure synthetic content.' 
+              : 'Human performance enhanced with AI editing tools.')
+          : undefined,
+        valuSplit: enableValuSplit ? {
+          collaborator: {
+            id: 'cr-collab-user',
+            name: collabUsername.replace('_', ' ').toUpperCase(),
+            username: collabUsername.replace('@', ''),
+            avatar: 'https://images.unsplash.com/photo-1506794778202-cad84cf45f1d?w=200&auto=format&fit=crop&q=80',
+            role: collabRole
+          },
+          primaryCreatorSharePercent: 100 - collabShare,
+          collaboratorSharePercent: collabShare,
+          totalSplitEarnedGHS: 0
+        } : undefined,
+        communityGoal: enableCommunityGoal ? {
+          id: `goal-${Date.now()}`,
+          title: goalTitle,
+          targetGHS: goalTargetGHS,
+          currentGHS: 0,
+          rewardDescription: goalReward,
+          isCompleted: false,
+          contributorsCount: 0,
+          recentContributors: []
+        } : undefined,
+        videoResolution: videoResolution || { width: 720, height: 1280, qualityLabel: '720p HD' },
+        productTag: products.find((p) => p.id === selectedProductId) || undefined,
+      });
+
+      if (!pubRes.success) {
+        alert(pubRes.error || 'Could not publish video to cloud. Please check your connection and try again.');
+      }
+    } finally {
+      setIsPublishing(false);
+    }
   };
 
 
@@ -1612,6 +1672,7 @@ export const CreateStudio: React.FC = () => {
                   <video
                     ref={previewVideoRef}
                     src={uploadedMediaUrl}
+                    crossOrigin="anonymous"
                     className="w-full h-full object-cover"
                     muted
                     autoPlay
@@ -2392,14 +2453,19 @@ export const CreateStudio: React.FC = () => {
           {/* Publish Action Button */}
           <button
             onClick={handlePublish}
-            disabled={isCloudUploading || (selectedFileObj !== null && !uploadComplete && uploadProgress < 100)}
+            disabled={isPublishing || isCloudUploading || (selectedFileObj !== null && !uploadComplete && uploadProgress < 100)}
             className={`w-full py-3.5 rounded-xl font-black text-sm flex items-center justify-center gap-2 active:scale-95 transition-all ${
-              isCloudUploading || (selectedFileObj !== null && !uploadComplete && uploadProgress < 100)
+              isPublishing || isCloudUploading || (selectedFileObj !== null && !uploadComplete && uploadProgress < 100)
                 ? 'bg-neutral-800 text-neutral-400 border border-neutral-700 cursor-not-allowed opacity-80'
                 : 'bg-gradient-to-r from-amber-400 via-amber-300 to-amber-500 text-black shadow-xl shadow-amber-500/25 hover:brightness-105 ring-2 ring-amber-400/40'
             }`}
           >
-            {isCloudUploading || (selectedFileObj !== null && !uploadComplete && uploadProgress < 100) ? (
+            {isPublishing ? (
+              <>
+                <div className="w-4 h-4 border-2 border-amber-400 border-t-transparent rounded-full animate-spin" />
+                <span>Publishing to ValuVid Cloud...</span>
+              </>
+            ) : isCloudUploading || (selectedFileObj !== null && !uploadComplete && uploadProgress < 100) ? (
               <>
                 <div className="w-4 h-4 border-2 border-amber-400 border-t-transparent rounded-full animate-spin" />
                 <span>Uploading Video ({Math.round(uploadProgress)}%)... Please Wait</span>
@@ -2591,13 +2657,13 @@ export const CreateStudio: React.FC = () => {
               <div className="bg-neutral-950 p-2.5 rounded-xl border border-neutral-800">
                 <span className="text-[10px] text-neutral-400 block mb-0.5">Live Tips</span>
                 <span className="text-sm font-bold text-amber-400">
-                  GHS {liveTipsGHS.toFixed(2)}
+                  ${liveTipsGHS.toFixed(2)}
                 </span>
               </div>
             </div>
 
             <p className="text-[11px] text-emerald-400 bg-emerald-950/60 p-2 rounded-xl border border-emerald-800/80">
-              GHS {liveTipsGHS.toFixed(2)} automatically deposited into your ValuWallet!
+              ${liveTipsGHS.toFixed(2)} automatically deposited into your ValuWallet!
             </p>
 
             <button

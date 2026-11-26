@@ -15,6 +15,14 @@ export const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
   },
 });
 
+// Stateless anon client fallback in case a user's cached auth JWT expires or is rejected by storage/DB RLS
+const supabaseAnon = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
+  auth: {
+    persistSession: false,
+    autoRefreshToken: false,
+  },
+});
+
 /**
  * Convert a File or Blob into a Base64 Data URL for cloud synchronization
  */
@@ -36,8 +44,8 @@ export async function uploadMediaToSupabase(
   file: File | Blob, 
   fileName?: string
 ): Promise<{ url: string; isRemote: boolean; error?: string }> {
-  const tryUploadToBucket = async (bucket: string, path: string, contentType: string) => {
-    const { data, error } = await supabase.storage
+  const tryUploadToBucket = async (client: typeof supabase, bucket: string, path: string, contentType: string) => {
+    const { data, error } = await client.storage
       .from(bucket)
       .upload(path, file, {
         cacheControl: '3600',
@@ -45,7 +53,7 @@ export async function uploadMediaToSupabase(
         contentType,
       });
     if (!error && data) {
-      const { data: publicUrlData } = supabase.storage.from(bucket).getPublicUrl(path);
+      const { data: publicUrlData } = client.storage.from(bucket).getPublicUrl(path);
       return { url: publicUrlData.publicUrl, error: null as string | null };
     }
     return { url: '', error: error?.message || 'Upload failed' };
@@ -53,8 +61,9 @@ export async function uploadMediaToSupabase(
 
   try {
     const rawMime = (file.type || '').trim();
-    const isImage = rawMime.includes('image') || /\.(jpe?g|png|webp|gif)$/i.test(fileName || '');
-    const mime = rawMime || (isImage ? 'image/jpeg' : 'video/mp4');
+    const baseMime = rawMime.split(';')[0].trim();
+    const isImage = baseMime.includes('image') || /\.(jpe?g|png|webp|gif)$/i.test(fileName || '');
+    const mime = baseMime || (isImage ? 'image/jpeg' : 'video/mp4');
     const ext = isImage ? 'jpg' : mime.includes('webm') ? 'webm' : 'mp4';
     const cleanFileName = fileName 
       ? `${Date.now()}_${fileName.replace(/[^a-zA-Z0-9._-]/g, '_')}`
@@ -64,17 +73,24 @@ export async function uploadMediaToSupabase(
     const fallbackBucket = STORAGE_BUCKET_NAME.toLowerCase().replace(/\s+/g, '-');
     const buckets = Array.from(new Set([STORAGE_BUCKET_NAME, fallbackBucket]));
     const mimeCandidates = Array.from(
-      new Set([mime, isImage ? 'image/jpeg' : 'video/mp4', 'application/octet-stream'])
+      new Set([mime, isImage ? 'image/jpeg' : 'video/mp4', isImage ? 'image/png' : 'video/webm', 'application/octet-stream'])
     );
 
     let lastError = '';
     for (const bucket of buckets) {
       for (const candidateMime of mimeCandidates) {
-        const res = await tryUploadToBucket(bucket, filePath, candidateMime);
+        const res = await tryUploadToBucket(supabase, bucket, filePath, candidateMime);
         if (res.url) {
           return { url: res.url, isRemote: true };
         }
         lastError = res.error || lastError;
+        // If auth/JWT/RLS error, immediately try anon client fallback
+        if (/jwt|token|auth|unauthorized|row-level|security|403/i.test(lastError)) {
+          const anonRes = await tryUploadToBucket(supabaseAnon, bucket, filePath, candidateMime);
+          if (anonRes.url) {
+            return { url: anonRes.url, isRemote: true };
+          }
+        }
         // Only retry with alternate MIME if it looks like a mime/format rejection; otherwise break to next bucket
         if (!/mime|content[-_ ]?type|format/i.test(lastError)) {
           break;
@@ -84,9 +100,13 @@ export async function uploadMediaToSupabase(
 
     // Retry primary bucket once after a brief backoff for transient mobile network hiccups
     await new Promise((r) => setTimeout(r, 800));
-    const retryRes = await tryUploadToBucket(STORAGE_BUCKET_NAME, filePath, mime);
+    const retryRes = await tryUploadToBucket(supabase, STORAGE_BUCKET_NAME, filePath, mime);
     if (retryRes.url) {
       return { url: retryRes.url, isRemote: true };
+    }
+    const anonRetryRes = await tryUploadToBucket(supabaseAnon, STORAGE_BUCKET_NAME, filePath, mime);
+    if (anonRetryRes.url) {
+      return { url: anonRetryRes.url, isRemote: true };
     }
 
     console.warn(`[Supabase Storage] All upload attempts failed:`, lastError || retryRes.error);
@@ -129,37 +149,45 @@ export async function saveVideoToSupabase(video: VideoItem): Promise<{ success: 
       ? ''
       : (rawThumb.includes('default-avatar') ? '' : rawThumb);
 
-    const { data, error } = await supabase
+    const rowPayload = {
+      id: video.id,
+      title: video.title,
+      caption: video.caption,
+      video_url: safeVideoUrl,
+      thumbnail_url: safeThumbnailUrl,
+      category: video.category,
+      hashtags: video.hashtags,
+      creator_id: video.creator.id,
+      creator_data: {
+        ...video.creator,
+        followers: typeof video.creator.followers === 'number' ? Math.max(0, video.creator.followers) : 0,
+        following: typeof video.creator.following === 'number' ? Math.max(0, video.creator.following) : 0,
+      },
+      stats: video.stats,
+      audio_track: video.audioTrack,
+      is_pay_per_unlock: video.isPayPerUnlock || false,
+      unlock_price_ghs: video.unlockPriceGHS || 0,
+      is_ai_content: video.isAiContent || false,
+      ai_disclosure_type: video.aiDisclosureType || 'none',
+      ai_tools_used: video.aiToolsUsed || [],
+      valu_split: video.valuSplit || null,
+      community_goal: video.communityGoal || null,
+      created_at: new Date().toISOString()
+    };
+
+    const { error } = await supabase
       .from('videos')
-      .insert([{
-        id: video.id,
-        title: video.title,
-        caption: video.caption,
-        video_url: safeVideoUrl,
-        thumbnail_url: safeThumbnailUrl,
-        category: video.category,
-        hashtags: video.hashtags,
-        creator_id: video.creator.id,
-        creator_data: {
-          ...video.creator,
-          followers: typeof video.creator.followers === 'number' ? Math.max(0, video.creator.followers) : 0,
-          following: typeof video.creator.following === 'number' ? Math.max(0, video.creator.following) : 0,
-        },
-        stats: video.stats,
-        audio_track: video.audioTrack,
-        is_pay_per_unlock: video.isPayPerUnlock || false,
-        unlock_price_ghs: video.unlockPriceGHS || 0,
-        is_ai_content: video.isAiContent || false,
-        ai_disclosure_type: video.aiDisclosureType || 'none',
-        ai_tools_used: video.aiToolsUsed || [],
-        valu_split: video.valuSplit || null,
-        community_goal: video.communityGoal || null,
-        created_at: new Date().toISOString()
-      }]);
+      .upsert([rowPayload], { onConflict: 'id' });
 
     if (error) {
-      console.warn('[Supabase DB] Failed to save video to database:', error.message);
-      return { success: false, error };
+      console.warn('[Supabase DB] Primary saveVideoToSupabase failed, retrying with anon client:', error.message);
+      const { error: anonErr } = await supabaseAnon
+        .from('videos')
+        .upsert([rowPayload], { onConflict: 'id' });
+      if (anonErr) {
+        console.warn('[Supabase DB] Anon fallback saveVideoToSupabase failed:', anonErr.message);
+        return { success: false, error: anonErr };
+      }
     }
     return { success: true };
   } catch (err) {
@@ -320,6 +348,13 @@ export async function fetchUserLikedVideoIdsFromSupabase(
   }
 }
 
+const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+function isValidFollowActor(username?: string): boolean {
+  const clean = (username || '').trim().toLowerCase().replace(/^@/, '');
+  return Boolean(clean) && !isMockAccount(clean) && !UUID_REGEX.test(clean);
+}
+
 /**
  * Save or remove follow relationship in Supabase and sync counts
  */
@@ -331,7 +366,7 @@ export async function saveFollowRecordInSupabase(
   try {
     const cleanFollower = (followerUsername || '').trim().toLowerCase().replace(/^@/, '');
     const cleanTarget = (targetUsername || '').trim().toLowerCase().replace(/^@/, '');
-    if (!cleanFollower || !cleanTarget || cleanFollower === cleanTarget || isMockAccount(cleanFollower) || isMockAccount(cleanTarget)) {
+    if (!isValidFollowActor(cleanFollower) || !isValidFollowActor(cleanTarget) || cleanFollower === cleanTarget) {
       return { success: false, targetFollowers: 0, followerFollowing: 0 };
     }
 
@@ -355,23 +390,35 @@ export async function saveFollowRecordInSupabase(
       await supabase.from('videos').delete().eq('id', followRecordId);
     }
 
-    // Count real followers for target
-    const { count: targetFollowersCount } = await supabase
+    // Count unique real followers for target (matching fetchUserProfileFromSupabase & fetchVideosFromSupabase)
+    const { data: targetFollowerRows } = await supabase
       .from('videos')
-      .select('id', { count: 'exact', head: true })
+      .select('creator_id, creator_data')
       .eq('category', 'follow_record')
       .eq('creator_data->>following', cleanTarget);
 
-    const finalTargetFollowers = typeof targetFollowersCount === 'number' ? targetFollowersCount : 0;
+    const finalTargetFollowers = Array.isArray(targetFollowerRows)
+      ? new Set(
+          targetFollowerRows
+            .map((r: any) => (r.creator_data?.follower || r.creator_id || '').toString().trim().toLowerCase().replace(/^@/, ''))
+            .filter((u: string) => isValidFollowActor(u) && u !== cleanTarget)
+        ).size
+      : 0;
 
-    // Count real following for follower
-    const { count: followerFollowingCount } = await supabase
+    // Count unique real following for follower
+    const { data: followerFollowingRows } = await supabase
       .from('videos')
-      .select('id', { count: 'exact', head: true })
+      .select('creator_data')
       .eq('category', 'follow_record')
       .eq('creator_data->>follower', cleanFollower);
 
-    const finalFollowerFollowing = typeof followerFollowingCount === 'number' ? followerFollowingCount : 0;
+    const finalFollowerFollowing = Array.isArray(followerFollowingRows)
+      ? new Set(
+          followerFollowingRows
+            .map((r: any) => (r.creator_data?.following || '').toString().trim().toLowerCase().replace(/^@/, ''))
+            .filter((u: string) => isValidFollowActor(u) && u !== cleanFollower)
+        ).size
+      : 0;
 
     // Update target's follower count across all their videos and user_registry row
     const { data: targetRows } = await supabase
@@ -789,6 +836,7 @@ export async function fetchVideosFromSupabase(): Promise<VideoItem[] | null> {
       !row.id.startsWith('like_') &&
       (row.creator_data?.username || '').toLowerCase() !== 'mokarsstitches' &&
       !row.id.includes('mokarsstitches') &&
+      Boolean((row.video_url || '').trim()) &&
       !isTestUserOrMockVideo(row)
     );
 
@@ -861,7 +909,7 @@ export async function fetchVideosFromSupabase(): Promise<VideoItem[] | null> {
         followRecords.forEach((fr: any) => {
           const follower = (fr.creator_data?.follower || fr.creator_id || '').toString().trim().toLowerCase().replace(/^@/, '');
           const following = (fr.creator_data?.following || '').toString().trim().toLowerCase().replace(/^@/, '');
-          if (follower && following && follower !== following && !isMockAccount(follower) && !isMockAccount(following)) {
+          if (isValidFollowActor(follower) && isValidFollowActor(following) && follower !== following) {
             if (!liveFollowersByUser[following]) liveFollowersByUser[following] = new Set();
             liveFollowersByUser[following].add(follower);
             if (!liveFollowingByUser[follower]) liveFollowingByUser[follower] = new Set();
@@ -1378,7 +1426,7 @@ export async function fetchUserProfileFromSupabase(usernameOrId: string) {
       ? new Set(
           followerRows
             .map((r: any) => (r.creator_data?.follower || r.creator_id || '').toString().trim().toLowerCase().replace(/^@/, ''))
-            .filter((u: string) => Boolean(u) && !isMockAccount(u))
+            .filter((u: string) => isValidFollowActor(u) && u !== clean)
         ).size
       : null;
 
@@ -1393,7 +1441,7 @@ export async function fetchUserProfileFromSupabase(usernameOrId: string) {
       ? new Set(
           followingRows
             .map((r: any) => (r.creator_data?.following || '').toString().trim().toLowerCase().replace(/^@/, ''))
-            .filter((u: string) => Boolean(u) && !isMockAccount(u))
+            .filter((u: string) => isValidFollowActor(u) && u !== clean)
         ).size
       : null;
 
@@ -1533,7 +1581,7 @@ export async function fetchFollowersListFromSupabase(targetUsername: string): Pr
     if (error || !data || data.length === 0) return [];
     const usernames: string[] = data.map((r: any) => r.creator_id || r.creator_data?.follower).filter(Boolean);
     const unique = Array.from(new Set(usernames.map(u => u.toLowerCase().replace(/^@/, '')))).filter(
-      (u) => Boolean(u) && !isMockAccount(u)
+      (u) => isValidFollowActor(u) && u !== clean
     );
 
     const results: any[] = [];
@@ -1578,7 +1626,7 @@ export async function fetchFollowingListFromSupabase(followerUsername: string): 
     if (error || !data || data.length === 0) return [];
     const usernames: string[] = data.map((r: any) => r.creator_data?.following).filter(Boolean);
     const unique = Array.from(new Set(usernames.map(u => u.toLowerCase().replace(/^@/, '')))).filter(
-      (u) => Boolean(u) && !isMockAccount(u)
+      (u) => isValidFollowActor(u) && u !== clean
     );
 
     const results: any[] = [];

@@ -3,12 +3,14 @@ package com.valuvid.app;
 import android.Manifest;
 import android.app.PictureInPictureParams;
 import android.content.pm.PackageManager;
+import android.content.res.Configuration;
 import android.graphics.Color;
 import android.os.Build;
 import android.os.Bundle;
 import android.util.Rational;
 import android.view.Window;
 import android.webkit.JavascriptInterface;
+import android.webkit.WebView;
 import androidx.core.app.ActivityCompat;
 import androidx.core.content.ContextCompat;
 import androidx.core.view.WindowCompat;
@@ -24,7 +26,38 @@ public class MainActivity extends BridgeActivity {
         @JavascriptInterface
         public void setPipActive(boolean active) {
             isPipActive = active;
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S &&
+                    getPackageManager().hasSystemFeature(PackageManager.FEATURE_PICTURE_IN_PICTURE)) {
+                runOnUiThread(() -> {
+                    if (!isDestroyed() && !isFinishing()) {
+                        try {
+                            setPictureInPictureParams(buildPipParams(active));
+                        } catch (Exception ignored) {}
+                    }
+                });
+            }
         }
+    }
+
+    private PictureInPictureParams buildPipParams(boolean autoEnter) {
+        PictureInPictureParams.Builder builder = new PictureInPictureParams.Builder()
+                .setAspectRatio(new Rational(9, 16));
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            builder.setAutoEnterEnabled(autoEnter);
+        }
+        return builder.build();
+    }
+
+    private void notifyWebViewPipState(boolean inPip) {
+        if (this.bridge == null) return;
+        WebView webView = this.bridge.getWebView();
+        if (webView == null) return;
+        final String js = "(function(){"
+                + "window.__VALUVID_IN_PIP__=" + inPip + ";"
+                + "if(document.documentElement){document.documentElement.classList.toggle('native-pip-active'," + inPip + ");}"
+                + "window.dispatchEvent(new CustomEvent('valuvid-pip-change',{detail:{isInPip:" + inPip + "}}));"
+                + "})();";
+        webView.post(() -> webView.evaluateJavascript(js, null));
     }
 
     @Override
@@ -59,13 +92,32 @@ public class MainActivity extends BridgeActivity {
     public void onUserLeaveHint() {
         super.onUserLeaveHint();
         if (isPipActive && Build.VERSION.SDK_INT >= Build.VERSION_CODES.O &&
+                !isInPictureInPictureMode() &&
                 getPackageManager().hasSystemFeature(PackageManager.FEATURE_PICTURE_IN_PICTURE)) {
             try {
-                PictureInPictureParams params = new PictureInPictureParams.Builder()
-                        .setAspectRatio(new Rational(9, 16))
-                        .build();
-                enterPictureInPictureMode(params);
+                enterPictureInPictureMode(buildPipParams(true));
             } catch (Exception ignored) {}
+        }
+    }
+
+    @Override
+    public void onPictureInPictureModeChanged(boolean isInPictureInPictureMode, Configuration newConfig) {
+        super.onPictureInPictureModeChanged(isInPictureInPictureMode, newConfig);
+        notifyWebViewPipState(isInPictureInPictureMode);
+    }
+
+    @Override
+    public void onStop() {
+        super.onStop();
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && isInPictureInPictureMode()) {
+            return;
+        }
+        if (this.bridge != null && this.bridge.getWebView() != null) {
+            WebView webView = this.bridge.getWebView();
+            webView.post(() -> webView.evaluateJavascript(
+                    "window.dispatchEvent(new CustomEvent('valuvid-native-stop'));",
+                    null
+            ));
         }
     }
 

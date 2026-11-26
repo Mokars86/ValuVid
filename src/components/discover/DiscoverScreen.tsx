@@ -1314,7 +1314,7 @@ export const DiscoverScreen: React.FC = () => {
 
                   <div className="mt-0.5 min-[360px]:mt-1 flex items-center gap-0.5 text-slate-300 font-extrabold text-[9px] min-[360px]:text-[10px] sm:text-[11px]">
                     <Coins className="w-2.5 h-2.5 min-[360px]:w-3 min-[360px]:h-3 text-slate-300 shrink-0" />
-                    <span>GHS {topTippedCreators[1].totalTipsGHS.toFixed(1)}</span>
+                    <span>${topTippedCreators[1].totalTipsGHS.toFixed(2)}</span>
                   </div>
 
                   {topTippedCreators[1].topVideo && (
@@ -1373,7 +1373,7 @@ export const DiscoverScreen: React.FC = () => {
 
                   <div className="mt-0.5 min-[360px]:mt-1 flex items-center gap-0.5 text-amber-400 font-black text-[10px] min-[360px]:text-xs sm:text-sm">
                     <Coins className="w-3 h-3 min-[360px]:w-3.5 min-[360px]:h-3.5 text-amber-400 shrink-0" />
-                    <span>GHS {topTippedCreators[0].totalTipsGHS.toFixed(1)}</span>
+                    <span>${topTippedCreators[0].totalTipsGHS.toFixed(2)}</span>
                   </div>
 
                   {topTippedCreators[0].topVideo && (
@@ -1430,7 +1430,7 @@ export const DiscoverScreen: React.FC = () => {
 
                   <div className="mt-0.5 min-[360px]:mt-1 flex items-center gap-0.5 text-amber-500 font-extrabold text-[9px] min-[360px]:text-[10px] sm:text-[11px]">
                     <Coins className="w-2.5 h-2.5 min-[360px]:w-3 min-[360px]:h-3 text-amber-500 shrink-0" />
-                    <span>GHS {topTippedCreators[2].totalTipsGHS.toFixed(1)}</span>
+                    <span>${topTippedCreators[2].totalTipsGHS.toFixed(2)}</span>
                   </div>
 
                   {topTippedCreators[2].topVideo && (

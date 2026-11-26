@@ -1,8 +1,9 @@
-import React, { useRef, useState, useEffect, useCallback } from 'react';
-import { Play, Pause, Volume2, VolumeX, Heart, Sparkles, Maximize2, Minimize2, X, RotateCw } from 'lucide-react';
+import React, { useRef, useState, useEffect, useCallback, useMemo } from 'react';
+import { Play, Pause, Volume2, VolumeX, Sparkles, Maximize2, Minimize2, X, RotateCw } from 'lucide-react';
 import { VideoItem } from '../../types';
 import { sounds } from '../../utils/soundEffects';
 import { resolveLiveVideoUrl, getImmediateVideoUrl, getFallbackVideoForId } from '../../utils/mediaStorage';
+import { detectVideoTopicReaction } from '../../utils/topicReaction';
 import { useApp } from '../../context/AppContext';
 import { App as CapApp } from '@capacitor/app';
 
@@ -32,7 +33,8 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
   onPlaybackTimeUpdate,
   onPlaybackStart
 }) => {
-  const { isFeedMuted, setIsFeedMuted, isCinemaMode, setIsCinemaMode, reportActivePlayback } = useApp();
+  const { isFeedMuted, setIsFeedMuted, isCinemaMode, setIsCinemaMode, isNativePip, reportActivePlayback } = useApp();
+  const topicReaction = useMemo(() => detectVideoTopicReaction(video), [video]);
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const bgAudioRef = useRef<HTMLAudioElement | null>(null);
   const [isPlaying, setIsPlaying] = useState(true);
@@ -185,6 +187,21 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
       document.removeEventListener('visibilitychange', handleVisibility);
     };
   }, [isActive]);
+
+  // Pause active playback if Android activity stops outside PiP (e.g. user dismissed PiP window)
+  useEffect(() => {
+    const handleNativeStop = () => {
+      if (videoRef.current && !videoRef.current.paused) {
+        videoRef.current.pause();
+        setIsPlaying(false);
+      }
+      if (bgAudioRef.current && !bgAudioRef.current.paused) {
+        bgAudioRef.current.pause();
+      }
+    };
+    window.addEventListener('valuvid-native-stop', handleNativeStop);
+    return () => window.removeEventListener('valuvid-native-stop', handleNativeStop);
+  }, []);
 
   // Synchronize playback with active feed slide and mute settings
   useEffect(() => {
@@ -418,8 +435,8 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
       onClick={handleContainerClick}
       style={{ touchAction: 'none' }}
       className={`overflow-hidden flex items-center justify-center cursor-pointer select-none touch-none ${
-        (isCinemaMode && isActive)
-          ? 'fixed inset-0 z-50 bg-black w-screen h-screen'
+        ((isCinemaMode || isNativePip) && isActive)
+          ? 'fixed inset-0 z-[60] bg-black w-full h-full'
           : 'relative w-full h-full bg-black'
       }`}
     >
@@ -429,7 +446,7 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
           src={video.thumbnailUrl}
           alt={video.title}
           className={`absolute transition-all duration-300 pointer-events-none select-none z-1 ${
-            (isCinemaMode && isActive)
+            (isCinemaMode && isActive && !isNativePip)
               ? (isScreenPortrait ? 'w-[100vh] h-[100vw] object-contain rotate-90 max-w-none max-h-none' : 'w-full h-full object-contain')
               : (isLandscape ? 'w-full h-full object-contain' : 'w-full h-full object-cover')
           } ${
@@ -440,7 +457,7 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
       )}
 
       {/* Ambient Glow Backdrop for Horizontal Landscape Videos */}
-      {isLandscape && !(isCinemaMode && isActive) && video.thumbnailUrl && !video.thumbnailUrl.includes('avatar') && (
+      {isLandscape && !(isCinemaMode && isActive) && !isNativePip && video.thumbnailUrl && !video.thumbnailUrl.includes('avatar') && (
         <div 
           className="absolute inset-0 bg-cover bg-center filter blur-2xl opacity-40 scale-125 pointer-events-none select-none"
           style={{ backgroundImage: `url(${video.thumbnailUrl})` }}
@@ -548,8 +565,8 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
           }}
           onError={handleVideoError}
           className={`pointer-events-none transition-all duration-300 z-2 ${
-            (isCinemaMode && isActive)
-              ? (isScreenPortrait ? 'w-[100vh] h-[100vw] object-contain rotate-90 max-w-none max-h-none' : 'w-full h-full object-contain')
+            (isCinemaMode && isActive && !isNativePip)
+              ? (isScreenPortrait ? 'w-[100vh] h-[100vw] object-contain rotate-90 max-w-none max-h-none' : 'w-full h-full object-cover')
               : (isLandscape ? 'w-full h-full object-contain' : 'w-full h-full object-cover')
           }`}
         />
@@ -596,7 +613,7 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
       )}
 
       {/* Play/Pause indicator overlay */}
-      {!isPlaying && !hasError && activeSrc && (
+      {!isPlaying && !hasError && activeSrc && !isNativePip && (
         <div className="absolute inset-0 z-20 flex items-center justify-center bg-black/25 backdrop-blur-[1px] pointer-events-none animate-fade-in">
           <div className="w-16 h-16 rounded-full bg-white/20 backdrop-blur-md flex items-center justify-center border border-white/40 shadow-xl">
             <Play className="w-8 h-8 text-white ml-1 fill-white" />
@@ -604,8 +621,8 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
         </div>
       )}
 
-      {/* TikTok-Style Floating Double-Tap Hearts */}
-      {floatingHearts.map((heart) => (
+      {/* Modern Gradient Double-Tap Heart Reaction with Shockwave & Sparkles */}
+      {!isNativePip && floatingHearts.map((heart) => (
         <div
           key={heart.id}
           className="absolute z-30 pointer-events-none"
@@ -615,19 +632,47 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
             transform: 'translate(-50%, -50%)',
           }}
         >
-          <div
-            className="animate-heart-pop"
-            style={{
-              transform: `rotate(${heart.rotate}deg)`,
-            }}
-          >
-            <Heart className="w-24 h-24 text-[#FE2C55] fill-[#FE2C55] drop-shadow-[0_0_25px_rgba(254,44,85,0.85)]" />
+          <div className="relative flex items-center justify-center">
+            <span className="absolute w-24 h-24 rounded-full border-2 border-rose-400/75 animate-like-ring" />
+            {[0, 45, 90, 135, 180, 225, 270, 315].map((deg) => (
+              <span
+                key={deg}
+                style={{ '--sparkle-angle': `${deg}deg` } as React.CSSProperties}
+                className={`absolute w-2 h-2 rounded-full animate-like-sparkle ${
+                  deg % 90 === 0 ? 'bg-amber-300' : 'bg-rose-400'
+                }`}
+              />
+            ))}
+            <div
+              className="animate-heart-pop"
+              style={{
+                transform: `rotate(${heart.rotate}deg)`,
+              }}
+            >
+              <svg
+                viewBox="0 0 24 24"
+                className="w-24 h-24 sm:w-28 sm:h-28 drop-shadow-[0_0_26px_rgba(254,44,85,0.85)]"
+                aria-hidden="true"
+              >
+                <path
+                  d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z"
+                  fill="#FE2C55"
+                />
+                <path
+                  d="M7.2 6.2c-1.1.3-1.8 1.1-2 2.1"
+                  stroke="rgba(255,255,255,0.65)"
+                  strokeWidth="1.4"
+                  strokeLinecap="round"
+                  fill="none"
+                />
+              </svg>
+            </div>
           </div>
         </div>
       ))}
 
       {/* Volume toggle button in corner */}
-      {!(isCinemaMode && isActive) && (
+      {!(isCinemaMode && isActive) && !isNativePip && (
         <button
           onClick={toggleMute}
           aria-label="Toggle mute"
@@ -638,7 +683,7 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
       )}
 
       {/* Horizontal Landscape Cinema Mode Button */}
-      {isLandscape && !(isCinemaMode && isActive) && !isCleanScreen && (
+      {isLandscape && !(isCinemaMode && isActive) && !isCleanScreen && !isNativePip && (
         <button
           type="button"
           onClick={(e) => {
@@ -655,7 +700,7 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
       )}
 
       {/* Fullscreen Landscape Cinema Mode Overlay */}
-      {isCinemaMode && isActive && (
+      {isCinemaMode && isActive && !isNativePip && (
         <div 
           className={`select-none flex flex-col justify-between pointer-events-none transition-opacity duration-300 ${
             showControls ? 'opacity-100' : 'opacity-0'
@@ -755,7 +800,7 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
       )}
 
       {/* Vertical View: Sleek In-Screen Bottom Duration Bar */}
-      {!(isCinemaMode && isActive) && (
+      {!(isCinemaMode && isActive) && !isNativePip && (
         <div 
           className="absolute bottom-0 inset-x-0 z-30 pointer-events-auto select-none px-3 pb-1 pt-1"
           onClick={(e) => e.stopPropagation()}
@@ -782,7 +827,7 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
       )}
 
       {/* Video vignette / gradient overlay for readable texts in normal vertical feed */}
-      {!(isCinemaMode && isActive) && (
+      {!(isCinemaMode && isActive) && !isNativePip && (
         <>
           <div className="absolute inset-x-0 bottom-0 h-44 bg-gradient-to-t from-black/90 via-black/40 to-transparent pointer-events-none z-10" />
           <div className="absolute inset-x-0 top-0 h-28 bg-gradient-to-b from-black/80 via-black/20 to-transparent pointer-events-none z-10" />

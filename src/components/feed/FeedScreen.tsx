@@ -23,7 +23,9 @@ import {
   Eye,
   CheckCircle2,
   RefreshCw,
-  Play
+  Play,
+  ChevronUp,
+  ChevronDown
 } from 'lucide-react';
 import { useApp } from '../../context/AppContext';
 import { VideoPlayer } from './VideoPlayer';
@@ -33,6 +35,8 @@ import { preloadVideo, getImmediateVideoUrl } from '../../utils/mediaStorage';
 import { formatCompactNumber, formatPublishedTime } from '../../utils/formatNumber';
 import { INITIAL_COMMUNITY_VIDEOS } from '../../data/communityVideos';
 import { getUserAvatar, isTestUserOrMockVideo } from '../../utils/userDirectory';
+import { detectVideoTopicReaction } from '../../utils/topicReaction';
+import { TopicReactionIcon } from './TopicReactionIcon';
 import { recordViewerForVideo } from './VideoViewersModal';
 import { getDeletedVideoIds } from '../../services/supabaseClient';
 
@@ -82,6 +86,7 @@ export const FeedScreen: React.FC = () => {
     openProductCheckout,
     openCreatorProfile,
     isCinemaMode,
+    isNativePip,
     recordVideoView,
     comments
   } = useApp();
@@ -89,6 +94,8 @@ export const FeedScreen: React.FC = () => {
   const [slideDirection, setSlideDirection] = useState<'up' | 'down' | null>(null);
   const [captionExpanded, setCaptionExpanded] = useState(false);
   const [isCleanScreen, setIsCleanScreen] = useState(false);
+  const [topicLikeBurst, setTopicLikeBurst] = useState<{ topic: string; emoji: string; glowColor: string; key: number } | null>(null);
+  const topicBurstTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const containerRef = useRef<HTMLDivElement | null>(null);
 
   // Filter videos according to active tab
@@ -324,9 +331,13 @@ export const FeedScreen: React.FC = () => {
     }
   };
 
-  // Keyboard navigation for power users
+  // Keyboard navigation for power users (ignore while typing in inputs/textareas)
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
+      const tag = (document.activeElement?.tagName || '').toUpperCase();
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || (document.activeElement as HTMLElement)?.isContentEditable) {
+        return;
+      }
       if (e.key === 'ArrowDown' || e.key === 'j') {
         handleNextVideo();
       } else if (e.key === 'ArrowUp' || e.key === 'k') {
@@ -348,15 +359,38 @@ export const FeedScreen: React.FC = () => {
     return true;
   };
 
+  const triggerTopicLikeBurst = (video: VideoItem) => {
+    const reaction = detectVideoTopicReaction(video);
+    if (topicBurstTimerRef.current) clearTimeout(topicBurstTimerRef.current);
+    setTopicLikeBurst({ topic: reaction.topic, emoji: reaction.emoji, glowColor: reaction.glowColor, key: Date.now() });
+    topicBurstTimerRef.current = setTimeout(() => {
+      setTopicLikeBurst(null);
+    }, 800);
+  };
+
+  useEffect(() => {
+    setTopicLikeBurst(null);
+    if (topicBurstTimerRef.current) {
+      clearTimeout(topicBurstTimerRef.current);
+      topicBurstTimerRef.current = null;
+    }
+  }, [currentVideo?.id]);
+
   const handleLike = () => {
     if (!currentVideo) return;
     if (!requireAuth('like videos')) return;
+    if (!currentVideo.isLiked) {
+      triggerTopicLikeBurst(currentVideo);
+    } else {
+      setTopicLikeBurst(null);
+    }
     toggleLikeVideo(currentVideo.id);
   };
 
   const handleDoubleTapLike = () => {
     if (!currentVideo) return;
     if (!requireAuth('like videos')) return;
+    triggerTopicLikeBurst(currentVideo);
     likeVideo(currentVideo.id);
   };
 
@@ -534,7 +568,7 @@ export const FeedScreen: React.FC = () => {
       </div>
 
       {/* CLEAN FULLSCREEN INDICATOR TOAST */}
-      {isCleanScreen && !isCinemaMode && (
+      {isCleanScreen && !isCinemaMode && !isNativePip && (
         <div className="absolute top-8 sm:top-5 left-1/2 -translate-x-1/2 z-30 pointer-events-none animate-fade-in flex items-center gap-1.5 bg-black/75 backdrop-blur-md border border-white/20 text-white/90 text-[10px] font-semibold px-3.5 py-1.5 rounded-full shadow-2xl">
           <Eye className="w-3.5 h-3.5 text-cyan-400 animate-pulse" />
           <span>Clean Fullscreen • Tap anywhere to restore buttons</span>
@@ -560,11 +594,11 @@ export const FeedScreen: React.FC = () => {
           <div className="bg-neutral-900/90 border border-neutral-800 rounded-2xl p-4 w-full max-w-xs mb-4">
             <div className="flex items-center justify-between text-xs text-neutral-400 mb-2">
               <span>Unlock Micro-Fee:</span>
-              <span className="text-amber-400 font-bold text-base">GHS {(currentVideo.unlockPriceGHS || 5.00).toFixed(2)}</span>
+              <span className="text-amber-400 font-bold text-base">${(currentVideo.unlockPriceGHS || 5.00).toFixed(2)}</span>
             </div>
             <div className="flex items-center justify-between text-[11px] text-neutral-500">
               <span>Your Wallet Balance:</span>
-              <span className="text-emerald-400 font-medium">GHS {wallet.balanceGHS.toFixed(2)}</span>
+              <span className="text-emerald-400 font-medium">${wallet.balanceUSD.toFixed(2)}</span>
             </div>
           </div>
 
@@ -573,14 +607,14 @@ export const FeedScreen: React.FC = () => {
             className="w-full max-w-xs py-3.5 px-6 rounded-xl bg-white hover:bg-neutral-100 text-black font-bold text-sm shadow-xl shadow-white/20 flex items-center justify-center gap-2 active:scale-95 transition-all"
           >
             <Lock className="w-4 h-4 text-black" />
-            Unlock Now for GHS {(currentVideo.unlockPriceGHS || 5.00).toFixed(2)}
+            Unlock Now for ${(currentVideo.unlockPriceGHS || 5.00).toFixed(2)}
           </button>
         </div>
       )}
 
       {/* TOP HEADER BAR (TikTok-Style, Centered, Following | For You | Fresh Creators) */}
       <header className={`relative z-20 w-full pt-[max(2.25rem,calc(env(safe-area-inset-top,0px)+0.75rem))] sm:pt-5 pb-2 px-3 sm:px-4 transition-all duration-300 flex items-center justify-center ${
-        (isCleanScreen || isCinemaMode) ? 'opacity-0 -translate-y-6 pointer-events-none' : 'opacity-100 translate-y-0'
+        isNativePip ? 'hidden' : (isCleanScreen || isCinemaMode) ? 'opacity-0 -translate-y-6 pointer-events-none' : 'opacity-100 translate-y-0'
       }`}>
         <div className="flex items-center justify-center gap-2 min-[360px]:gap-3 sm:gap-5">
           <button
@@ -628,11 +662,41 @@ export const FeedScreen: React.FC = () => {
         </div>
       </header>
 
+      {/* DESKTOP PREVIOUS / NEXT VIDEO CONTROLS */}
+      {!isCleanScreen && !isCinemaMode && filteredVideos.length > 1 && (
+        <div className="hidden lg:flex flex-col gap-2.5 absolute left-3 top-1/2 -translate-y-1/2 z-30">
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              handlePrevVideo();
+            }}
+            className="w-10 h-10 rounded-full bg-black/55 hover:bg-black/80 backdrop-blur-md border border-white/20 text-white flex items-center justify-center shadow-lg active:scale-95 transition-all cursor-pointer"
+            title="Previous video (↑)"
+            aria-label="Previous video"
+          >
+            <ChevronUp className="w-5 h-5" />
+          </button>
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              handleNextVideo();
+            }}
+            className="w-10 h-10 rounded-full bg-black/55 hover:bg-black/80 backdrop-blur-md border border-white/20 text-white flex items-center justify-center shadow-lg active:scale-95 transition-all cursor-pointer"
+            title="Next video (↓)"
+            aria-label="Next video"
+          >
+            <ChevronDown className="w-5 h-5" />
+          </button>
+        </div>
+      )}
+
       {/* RIGHT ACTION SIDEBAR (Authentic TikTok Style: Full-bleed icons, bold metrics, spinning vinyl record) */}
       <aside 
         style={{ touchAction: 'manipulation' }}
         className={`absolute right-2 min-[380px]:right-3.5 bottom-[max(4.25rem,calc(env(safe-area-inset-bottom,0px)+3.75rem))] min-[380px]:bottom-[max(4.75rem,calc(env(safe-area-inset-bottom,0px)+4.25rem))] z-35 pointer-events-auto flex flex-col items-center gap-2.5 min-[380px]:gap-3.5 transition-all duration-300 ${
-          (isCleanScreen || isCinemaMode) ? 'opacity-0 translate-x-6 pointer-events-none' : 'opacity-100 translate-x-0'
+          isNativePip ? 'hidden' : (isCleanScreen || isCinemaMode) ? 'opacity-0 translate-x-6 pointer-events-none' : 'opacity-100 translate-x-0'
         }`}
       >
         {/* Creator Avatar & TikTok Red Follow Pill */}
@@ -674,20 +738,65 @@ export const FeedScreen: React.FC = () => {
           )}
         </div>
 
-        {/* Like Button (Full-bleed Heart, TikTok #FE2C55 Red Fill) */}
+        {/* Like Button (Modern Gradient Ruby-Rose Heart with Ring Ripple & Sparkle Burst) */}
         <button
           onClick={handleLike}
-          className="flex flex-col items-center group active:scale-125 transition-transform"
+          className="flex flex-col items-center group active:scale-115 transition-transform"
           aria-label="Like video"
         >
-          <div className="flex items-center justify-center">
-            <Heart
-              className={`w-7 h-7 min-[380px]:w-8 min-[380px]:h-8 drop-shadow-[0_2px_6px_rgba(0,0,0,0.85)] transition-all duration-200 ${
-                currentVideo.isLiked
-                  ? 'text-[#FE2C55] fill-[#FE2C55] animate-spring-pop'
-                  : 'text-white fill-white/10 hover:text-white'
-              }`}
-            />
+          <div className="relative flex items-center justify-center w-9 h-9 min-[380px]:w-10 min-[380px]:h-10">
+            {currentVideo.isLiked && (
+              <>
+                <span
+                  key={`ring-${currentVideo.id}-${currentVideo.stats?.likes || 0}`}
+                  className="absolute inset-0 rounded-full border-2 border-rose-400/80 pointer-events-none animate-like-ring"
+                />
+                {[0, 60, 120, 180, 240, 300].map((deg) => (
+                  <span
+                    key={`sp-${deg}-${currentVideo.stats?.likes || 0}`}
+                    style={{ '--sparkle-angle': `${deg}deg` } as React.CSSProperties}
+                    className={`absolute w-1.5 h-1.5 rounded-full pointer-events-none animate-like-sparkle ${
+                      deg % 120 === 0 ? 'bg-amber-300' : 'bg-rose-400'
+                    }`}
+                  />
+                ))}
+              </>
+            )}
+
+            {topicLikeBurst ? (
+              <div key={topicLikeBurst.key} className="animate-topic-pop flex items-center justify-center">
+                <TopicReactionIcon
+                  topic={topicLikeBurst.topic}
+                  emoji={topicLikeBurst.emoji}
+                  glowColor={topicLikeBurst.glowColor}
+                />
+              </div>
+            ) : (
+              <svg
+                viewBox="0 0 24 24"
+                className={`w-7 h-7 min-[380px]:w-8 min-[380px]:h-8 transition-all duration-200 ${
+                  currentVideo.isLiked
+                    ? 'animate-spring-pop drop-shadow-[0_0_12px_rgba(254,44,85,0.75)]'
+                    : 'drop-shadow-[0_2px_6px_rgba(0,0,0,0.85)] group-hover:scale-105'
+                }`}
+              >
+                <path
+                  d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z"
+                  fill={currentVideo.isLiked ? '#FE2C55' : 'rgba(255,255,255,0.14)'}
+                  stroke={currentVideo.isLiked ? 'none' : '#FFFFFF'}
+                  strokeWidth={currentVideo.isLiked ? '0' : '1.75'}
+                />
+                {currentVideo.isLiked && (
+                  <path
+                    d="M7.2 6.2c-1.1.3-1.8 1.1-2 2.1"
+                    stroke="rgba(255,255,255,0.6)"
+                    strokeWidth="1.4"
+                    strokeLinecap="round"
+                    fill="none"
+                  />
+                )}
+              </svg>
+            )}
           </div>
           <span className="text-[11px] min-[380px]:text-[12px] font-bold text-white drop-shadow-[0_1px_3px_rgba(0,0,0,0.9)] mt-0.5 select-none">
             {formatCompactNumber(currentVideo.stats?.likes || 0)}
@@ -752,13 +861,13 @@ export const FeedScreen: React.FC = () => {
           style={{ touchAction: 'manipulation' }}
           className="flex flex-col items-center group relative active:scale-110 transition-transform cursor-pointer pointer-events-auto select-none"
           aria-label="Tip creator"
-          title="Tip creator with Mobile Money"
+          title="Tip creator"
         >
           <div className="w-8 h-8 min-[380px]:w-9 min-[380px]:h-9 rounded-full bg-gradient-to-tr from-amber-500/30 to-amber-400/20 border border-amber-400/80 flex items-center justify-center backdrop-blur-md shadow-[0_2px_10px_rgba(245,158,11,0.35)] group-hover:scale-105 transition-all pointer-events-none">
             <Coins className="w-4 h-4 min-[380px]:w-4.5 min-[380px]:h-4.5 text-amber-300 drop-shadow-[0_1px_3px_rgba(0,0,0,0.8)]" />
           </div>
           <span className="text-[10px] min-[380px]:text-[11px] font-bold text-amber-300 drop-shadow-[0_1px_3px_rgba(0,0,0,0.9)] mt-0.5 select-none tracking-tight pointer-events-none">
-            GHS {(currentVideo.stats?.tipsTotalGHS || 0).toFixed(1)}
+            ${(currentVideo.stats?.tipsTotalGHS || 0).toFixed(2)}
           </span>
         </button>
 
@@ -789,7 +898,7 @@ export const FeedScreen: React.FC = () => {
 
       {/* BOTTOM OVERLAY (Hidden in Clean Fullscreen Mode) */}
       <footer className={`relative z-20 w-full px-3 min-[380px]:px-4 pb-[max(4.5rem,calc(env(safe-area-inset-bottom,0px)+4rem))] min-[380px]:pb-[max(5rem,calc(env(safe-area-inset-bottom,0px)+4.25rem))] flex flex-col gap-1.5 min-[380px]:gap-2 transition-all duration-300 pointer-events-none ${
-        (isCleanScreen || isCinemaMode) ? 'opacity-0 translate-y-6' : 'opacity-100 translate-y-0'
+        isNativePip ? 'hidden' : (isCleanScreen || isCinemaMode) ? 'opacity-0 translate-y-6' : 'opacity-100 translate-y-0'
       }`}>
         {/* Sleek Mini Watch Progress Pill (Ultra-compact, 70% less space) */}
         <div 
